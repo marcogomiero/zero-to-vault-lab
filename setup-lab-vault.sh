@@ -11,7 +11,7 @@
 # - Messaggistica migliorata per chiarezza sul processo di download/aggiornamento.
 
 # --- Configurazione Globale ---
-BASE_DIR="/mnt/c/Users/gomiero1/PycharmProjects/YAML/VAULT/VAULT-LAB" # La tua base dir
+BASE_DIR="/mnt/c/Users/gomiero1/PycharmProjects/PythonProject/zero-to-vault-lab" # La tua base dir
 BIN_DIR="$BASE_DIR/bin"
 VAULT_DIR="$BASE_DIR/vault-lab"
 VAULT_ADDR="http://127.0.0.1:8200" # Indirizzo predefinito di Vault
@@ -127,6 +127,26 @@ download_latest_vault_binary() {
     return $success
 }
 
+# --- Funzione: Attendi che Vault sia UP e risponda alle API ---
+wait_for_vault_up() {
+  local addr=$1
+  local timeout=30 # Tempo massimo di attesa in secondi
+  local elapsed=0
+
+  echo "Attesa che Vault sia in ascolto su $addr..."
+  while [[ $elapsed -lt $timeout ]]; do
+    if curl -s -o /dev/null -w "%{http_code}" "$addr/v1/sys/seal-status" | grep -q "200"; then
+      echo "Vault è in ascolto e risponde alle API dopo $elapsed secondi."
+      return 0
+    fi
+    sleep 1
+    echo -n "."
+    ((elapsed++))
+  done
+  echo -e "\nVault non è diventato raggiungibile dopo $timeout secondi. Controllare i log ($VAULT_DIR/vault.log)."
+  exit 1
+}
+
 # --- Funzione: Pulisci ambiente precedente ---
 cleanup_previous_environment() {
     echo "=================================================="
@@ -144,6 +164,7 @@ cleanup_previous_environment() {
     mkdir -p "$VAULT_DIR"
 }
 
+# --- Funzione: Configura e avvia Vault ---
 # --- Funzione: Configura e avvia Vault ---
 configure_and_start_vault() {
     echo -e "\n=================================================="
@@ -171,8 +192,8 @@ EOF
     LAB_VAULT_PID=$!
     echo "PID Vault server: $LAB_VAULT_PID"
 
-    echo "Attesa avvio di Vault..."
-    sleep 5
+    # Nuova chiamata alla funzione di attesa
+    wait_for_vault_up "$VAULT_ADDR"
 }
 
 # --- Funzione: Attendi che Vault sia UNSEALED e pronto ---
