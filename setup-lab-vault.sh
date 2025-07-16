@@ -251,7 +251,7 @@ download_latest_vault_binary() {
     # Extract the latest non-enterprise version using jq
     latest_version=$(echo "$vault_releases_json" | \
                      tr -d '\r' | \
-                     jq -r '.versions | to_entries | .[] | select(.key | contains("ent") | not) | .value.version' | \
+                     jq -r '.versions | to_entries | .[] | select((.key | contains("ent") | not) and (.key | contains("-rc") | not)) | .value.version' | \
                      sort -V | tail -n 1)
 
     if [ -z "$latest_version" ]; then
