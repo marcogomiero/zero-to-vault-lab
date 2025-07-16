@@ -1,28 +1,28 @@
 #!/bin/bash
 
-# Script per configurare un ambiente Vault di laboratorio pronto all'uso.
-# - Una singola istanza Vault.
-# - Già inizializzata e sbloccata.
-# - Root token impostato a "root".
-# - Alcuni secrets engine comuni abilitati.
-# - AppRole abilitato e configurato con un esempio.
-# - Audit Device abilitato.
-# - Scarica automaticamente l'ultima versione di Vault (escludendo solo le versioni enterprise).
-# - Messaggistica migliorata per chiarezza sul processo di download/aggiornamento.
+# Script to configure a ready-to-use laboratory Vault environment.
+# - A single Vault instance.
+# - Already initialized and unsealed.
+# - Root token set to "root".
+# - Several common secrets engines enabled.
+# - AppRole enabled and configured with an example.
+# - Audit Device enabled.
+# - Automatically downloads the latest Vault version (excluding enterprise versions).
+# - Improved messaging for clarity on the download/update process.
 
-# --- Configurazione Globale ---
-BASE_DIR="/mnt/c/Users/gomiero1/PycharmProjects/PythonProject/zero-to-vault-lab" # La tua base dir
+# --- Global Configuration ---
+BASE_DIR="/mnt/c/Users/gomiero1/PycharmProjects/PythonProject/zero-to-vault-lab" # Your base directory
 BIN_DIR="$BASE_DIR/bin"
 VAULT_DIR="$BASE_DIR/vault-lab"
-VAULT_ADDR="http://127.0.0.1:8200" # Indirizzo predefinito di Vault
-LAB_VAULT_PID="" # Variabile globale per il PID di Vault
+VAULT_ADDR="http://127.0.0.1:8200" # Default Vault address
+LAB_VAULT_PID="" # Global variable for Vault PID
 
-# Percorso per l'Audit Log (percorso predefinito per il laboratorio è /dev/null)
-# Per abilitare l'audit su un file reale, cambiare questa variabile. Esempio:
+# Path for the Audit Log (default path for the lab is /dev/null)
+# To enable auditing to a real file, change this variable. Example:
 # AUDIT_LOG_PATH="$VAULT_DIR/vault_audit.log"
 AUDIT_LOG_PATH="/dev/null"
 
-# --- Funzione: Download o aggiornamento del binario Vault ---
+# --- Function: Download or update Vault binary ---
 download_latest_vault_binary() {
     local bin_dir="$1"
     local platform="linux_amd64"
@@ -31,25 +31,25 @@ download_latest_vault_binary() {
     local success=1
 
     echo "=================================================="
-    echo "GESTIONE BINARIO VAULT: CONTROLLO E SCARICAMENTO"
+    echo "VAULT BINARY MANAGEMENT: CHECK AND DOWNLOAD"
     echo "=================================================="
 
     local missing_deps=false
     if ! command -v jq &> /dev/null; then
-        echo "ATTENZIONE: 'jq' non trovato. Si prega di installarlo (es. 'sudo apt install jq')."
+        echo "WARNING: 'jq' not found. Please install it (e.g., 'sudo apt install jq')."
         missing_deps=true
     fi
     if ! command -v curl &> /dev/null; then
-        echo "ATTENZIONE: 'curl' non trovato. Si prega di installarlo (es. 'sudo apt install curl')."
+        echo "WARNING: 'curl' not found. Please install it (e.g., 'sudo apt install curl')."
         missing_deps=true
     fi
     if ! command -v unzip &> /dev/null; then
-        echo "ATTENZIONE: 'unzip' non trovato. Si prega di installarlo (es. 'sudo apt install unzip')."
+        echo "WARNING: 'unzip' not found. Please install it (e.g., 'sudo apt install unzip')."
         missing_deps=true
     fi
 
     if [ "$missing_deps" = true ]; then
-        echo "Impossibile procedere con il download automatico a causa di dipendenze mancanti."
+        echo "Cannot proceed with automatic download due to missing dependencies."
         rm -rf "$temp_dir"
         return 1
     fi
@@ -58,7 +58,7 @@ download_latest_vault_binary() {
     vault_releases_json=$(curl -s "https://releases.hashicorp.com/vault/index.json")
 
     if [ -z "$vault_releases_json" ]; then
-        echo "Errore: 'curl' non ha ricevuto dati dalla URL di HashiCorp. Controllare la connessione internet o l'URL: https://releases.hashicorp.com/vault/index.json"
+        echo "Error: 'curl' received no data from HashiCorp URL. Check internet connection or URL: https://releases.hashicorp.com/vault/index.json"
         rm -rf "$temp_dir"
         return 1
     fi
@@ -70,12 +70,12 @@ download_latest_vault_binary() {
                      sort -V | tail -n 1)
 
     if [ -z "$latest_version" ]; then
-        echo "Errore: Impossibile determinare l'ultima versione di Vault. La struttura JSON potrebbe essere cambiata o nessun match trovato."
+        echo "Error: Could not determine the latest Vault version. JSON structure might have changed or no match found."
         rm -rf "$temp_dir"
         return 1
     fi
 
-    echo "Ultima versione disponibile (incluse eventuali release candidate): $latest_version"
+    echo "Latest available version (including any release candidates): $latest_version"
 
     if [ -f "$vault_exe" ]; then
         local current_version
@@ -83,95 +83,94 @@ download_latest_vault_binary() {
         current_version=${current_version#v}
 
         if [ "$current_version" == "$latest_version" ]; then
-            echo "Il binario Vault corrente (v$current_version) è già l'ultima versione disponibile."
-            echo "Nessun download o aggiornamento necessario. Verrà usato il binario esistente."
+            echo "Current Vault binary (v$current_version) is already the latest version available."
+            echo "No download or update needed. Existing binary will be used."
             rm -rf "$temp_dir"
             return 0
         else
-            echo "Il binario Vault corrente è v$current_version. L'ultima versione disponibile è v$latest_version."
-            echo "Procedo con l'aggiornamento..."
+            echo "Current Vault binary is v$current_version. Latest available version is v$latest_version."
+            echo "Proceeding with update..."
         fi
     else
-        echo "Nessun binario Vault trovato in $bin_dir. Procedo con lo scaricamento dell'ultima versione."
+        echo "No Vault binary found in $bin_dir. Proceeding with downloading the latest version."
     fi
 
     local download_url="https://releases.hashicorp.com/vault/${latest_version}/vault_${latest_version}_${platform}.zip"
     local zip_file="$temp_dir/vault.zip"
 
-    echo "Scaricando Vault v$latest_version per $platform da $download_url..."
+    echo "Downloading Vault v$latest_version for $platform from $download_url..."
     if ! curl -fsSL -o "$zip_file" "$download_url"; then
-        echo "Errore: Fallito lo scaricamento di Vault da $download_url."
+        echo "Error: Failed to download Vault from $download_url."
         rm -rf "$temp_dir"
         return 1
     fi
 
-    echo "Estrazione del binario..."
+    echo "Extracting the binary..."
     if ! unzip -o "$zip_file" -d "$temp_dir" >/dev/null; then
-        echo "Errore: Fallita l'estrazione del file zip."
+        echo "Error: Failed to extract the zip file."
         rm -rf "$temp_dir"
         return 1
     fi
 
     if [ -f "$temp_dir/vault" ]; then
-        echo "Spostamento e configurazione del nuovo binario Vault in $bin_dir..."
+        echo "Moving and configuring the new Vault binary to $bin_dir..."
         mkdir -p "$bin_dir"
         mv "$temp_dir/vault" "$vault_exe"
         chmod +x "$vault_exe"
         success=0
-        echo "Vault v$latest_version scaricato e configurato con successo."
+        echo "Vault v$latest_version downloaded and configured successfully."
     else
-        echo "Errore: Binario 'vault' non trovato nell'archivio estratto."
+        echo "Error: 'vault' binary not found in the extracted archive."
     fi
 
     rm -rf "$temp_dir"
     return $success
 }
 
-# --- Funzione: Attendi che Vault sia UP e risponda alle API ---
+# --- Function: Wait for Vault to be UP and respond to APIs ---
 wait_for_vault_up() {
   local addr=$1
-  local timeout=30 # Tempo massimo di attesa in secondi
+  local timeout=30 # Maximum wait time in seconds
   local elapsed=0
 
-  echo "Attesa che Vault sia in ascolto su $addr..."
+  echo "Waiting for Vault to listen on $addr..."
   while [[ $elapsed -lt $timeout ]]; do
     if curl -s -o /dev/null -w "%{http_code}" "$addr/v1/sys/seal-status" | grep -q "200"; then
-      echo "Vault è in ascolto e risponde alle API dopo $elapsed secondi."
+      echo "Vault is listening and responding to APIs after $elapsed seconds."
       return 0
     fi
     sleep 1
     echo -n "."
     ((elapsed++))
   done
-  echo -e "\nVault non è diventato raggiungibile dopo $timeout secondi. Controllare i log ($VAULT_DIR/vault.log)."
+  echo -e "\nVault did not become reachable after $timeout seconds. Check logs ($VAULT_DIR/vault.log)."
   exit 1
 }
 
-# --- Funzione: Pulisci ambiente precedente ---
+# --- Function: Clean up previous environment ---
 cleanup_previous_environment() {
     echo "=================================================="
-    echo "PULIZIA COMPLETA AMBIENTE PRECEDENTE DI LABORATORIO"
+    echo "FULL CLEANUP OF PREVIOUS LAB ENVIRONMENT"
     echo "=================================================="
 
-    echo "Fermo tutti i processi Vault in ascolto sulla porta 8200..."
+    echo "Stopping all Vault processes listening on port 8200..."
     lsof -ti:8200 | xargs -r kill >/dev/null 2>&1
     sleep 1
 
-    echo "Cancello directory di lavoro precedenti..."
+    echo "Deleting previous working directories..."
     rm -rf "$VAULT_DIR"
 
-    echo "Ricreo directory vuote..."
+    echo "Recreating empty directories..."
     mkdir -p "$VAULT_DIR"
 }
 
-# --- Funzione: Configura e avvia Vault ---
-# --- Funzione: Configura e avvia Vault ---
+# --- Function: Configure and start Vault ---
 configure_and_start_vault() {
     echo -e "\n=================================================="
-    echo "CONFIGURAZIONE VAULT DI LABORATORIO (ISTANZA SINGOLA)"
+    echo "CONFIGURING LAB VAULT (SINGLE INSTANCE)"
     echo "=================================================="
 
-    echo "Configurazione del file di Vault..."
+    echo "Configuring Vault file..."
     cat > "$VAULT_DIR/config.hcl" <<EOF
 storage "file" {
   path = "$VAULT_DIR/storage"
@@ -187,40 +186,40 @@ cluster_addr = "http://127.0.0.1:8201"
 ui = true
 EOF
 
-    echo "Avvio Vault server in background..."
+    echo "Starting Vault server in background..."
     "$BIN_DIR/vault" server -config="$VAULT_DIR/config.hcl" > "$VAULT_DIR/vault.log" 2>&1 &
     LAB_VAULT_PID=$!
-    echo "PID Vault server: $LAB_VAULT_PID"
+    echo "Vault server PID: $LAB_VAULT_PID"
 
-    # Nuova chiamata alla funzione di attesa
+    # New call to the wait function
     wait_for_vault_up "$VAULT_ADDR"
 }
 
-# --- Funzione: Attendi che Vault sia UNSEALED e pronto ---
+# --- Function: Wait for Vault to be UNSEALED and ready ---
 wait_for_unseal_ready() {
   local addr=$1
   local timeout=30
   local elapsed=0
 
-  echo "Attesa che Vault sia completamente sbloccato e operativo per le API..."
+  echo "Waiting for Vault to be fully unsealed and operational for APIs..."
   while [[ $elapsed -lt $timeout ]]; do
     status_output=$("$BIN_DIR/vault" status -address=$addr 2>/dev/null)
     if echo "$status_output" | grep -q "Sealed.*false"; then
-      echo "Vault è sbloccato e operativo dopo $elapsed secondi."
+      echo "Vault is unsealed and operational after $elapsed seconds."
       return 0
     fi
     sleep 1
     echo -n "."
     ((elapsed++))
   done
-  echo -e "\nVault non è diventato operativo dopo $timeout secondi. Controllare i log."
+  echo -e "\nVault did not become operational after $timeout seconds. Check logs."
   exit 1
 }
 
 
-# --- Funzione: Inizializza e sblocca Vault ---
+# --- Function: Initialize and unseal Vault ---
 initialize_and_unseal_vault() {
-    echo -e "\nInizializzo Vault..."
+    echo -e "\nInitializing Vault..."
     export VAULT_ADDR="$VAULT_ADDR"
     local INIT_OUTPUT
     INIT_OUTPUT=$("$BIN_DIR/vault" operator init -key-shares=1 -key-threshold=1 -format=json)
@@ -233,15 +232,15 @@ initialize_and_unseal_vault() {
     echo "$ROOT_TOKEN_VAULT" > "$VAULT_DIR/root_token.txt"
     echo "$UNSEAL_KEY_VAULT" > "$VAULT_DIR/unseal_key.txt"
 
-    echo "Vault inizializzato."
+    echo "Vault initialized."
 
-    echo "Eseguo l'unseal del Vault con la chiave generata..."
+    echo "Performing Vault unseal with the generated key..."
     "$BIN_DIR/vault" operator unseal "$UNSEAL_KEY_VAULT"
-    echo "Vault sbloccato."
+    echo "Vault unsealed."
 
     wait_for_unseal_ready "$VAULT_ADDR"
 
-    echo "Imposto il root token a 'root' (solo per laboratorio, non per produzione!)..."
+    echo "Setting root token to 'root' (lab only, not for production!)..."
     export VAULT_TOKEN="$ROOT_TOKEN_VAULT"
     "$BIN_DIR/vault" token create -id="root" -policy="root" -no-default-policy -display-name="laboratory-root" >/dev/null
 
@@ -250,11 +249,11 @@ initialize_and_unseal_vault() {
 }
 
 
-# --- Funzione: Configura AppRole ---
+# --- Function: Configure AppRole ---
 configure_approle() {
-    echo -e "\nAbilito e configuro Auth Method AppRole..."
+    echo -e "\nEnabling and configuring AppRole Auth Method..."
 
-    echo " - Abilito Auth Method 'approle' a 'approle/'"
+    echo " - Enabling Auth Method 'approle' at 'approle/'"
     "$BIN_DIR/vault" auth enable approle
 
     cat > "$VAULT_DIR/approle-policy.hcl" <<EOF
@@ -266,10 +265,10 @@ path "secret/other-data" {
 }
 EOF
 
-    echo " - Creo policy 'my-app-policy' per AppRole..."
+    echo " - Creating 'my-app-policy' policy for AppRole..."
     "$BIN_DIR/vault" policy write my-app-policy "$VAULT_DIR/approle-policy.hcl"
 
-    echo " - Creo ruolo AppRole 'web-application'..."
+    echo " - Creating AppRole 'web-application' role..."
     "$BIN_DIR/vault" write auth/approle/role/web-application \
         token_policies="default,my-app-policy" \
         token_ttl="1h" \
@@ -277,98 +276,115 @@ EOF
 
     local ROLE_ID
     ROLE_ID=$("$BIN_DIR/vault" read -field=role_id auth/approle/role/web-application/role-id)
-    echo "   Role ID per 'web-application': $ROLE_ID (salvato in $VAULT_DIR/approle_role_id.txt)"
+    echo "   Role ID for 'web-application': $ROLE_ID (saved in $VAULT_DIR/approle_role_id.txt)"
     echo "$ROLE_ID" > "$VAULT_DIR/approle_role_id.txt"
 
     local SECRET_ID
     SECRET_ID=$("$BIN_DIR/vault" write -f -field=secret_id auth/approle/role/web-application/secret-id)
-    echo "   Secret ID per 'web-application': $SECRET_ID (salvato in $VAULT_DIR/approle_secret_id.txt)"
+    echo "   Secret ID for 'web-application': $SECRET_ID (saved in $VAULT_DIR/approle_secret_id.txt)"
     echo "$SECRET_ID" > "$VAULT_DIR/approle_secret_id.txt"
 
-    echo "Configurazione AppRole completata per il ruolo 'web-application'."
+    echo "AppRole configuration completed for role 'web-application'."
 }
 
 
-# --- Funzione: Configura Audit Device (usa la variabile globale AUDIT_LOG_PATH) ---
+# --- Function: Configure Audit Device (uses global variable AUDIT_LOG_PATH) ---
 configure_audit_device() {
-    echo -e "\nAbilito e configuro un Audit Device..."
-    echo " - Abilito audit device su file a '$AUDIT_LOG_PATH'"
+    echo -e "\nEnabling and configuring an Audit Device..."
+    echo " - Enabling file audit device at '$AUDIT_LOG_PATH'"
     "$BIN_DIR/vault" audit enable file file_path="$AUDIT_LOG_PATH"
 
-    echo "Audit Device configurato. I log saranno scritti in $AUDIT_LOG_PATH"
+    echo "Audit Device configured. Logs will be written to $AUDIT_LOG_PATH"
 }
 
 
-# --- Funzione: Abilita e configura funzionalità comuni ---
+# --- Function: Enable and configure common features ---
 configure_vault_features() {
-    echo -e "\nAbilito e configuro funzionalità comuni..."
+    echo -e "\nEnabling and configuring common features..."
 
-    echo " - Abilito secrets engine KV v2 a 'secret/'"
+    echo " - Enabling KV v2 secrets engine at 'secret/'"
     "$BIN_DIR/vault" secrets enable -path=secret kv-v2
 
-    echo " - Abilito secrets engine PKI a 'pki/'"
+    echo " - Enabling KV v2 secrets engine at 'kv/'"
+    "$BIN_DIR/vault" secrets enable -path=kv kv-v2
+
+    echo " - Enabling PKI secrets engine at 'pki/'"
     "$BIN_DIR/vault" secrets enable pki
     "$BIN_DIR/vault" secrets tune -max-lease-ttl=87600h pki
 
-    echo " - Abilito Auth Method 'userpass' a 'userpass/'"
+    echo " - Enabling 'userpass' Auth Method at 'userpass/'"
     "$BIN_DIR/vault" auth enable userpass
 
-    echo " - Creo utente di esempio 'devuser' con password 'devpass'"
+    echo " - Creating example user 'devuser' with password 'devpass'"
     "$BIN_DIR/vault" write auth/userpass/users/devuser password=devpass policies=default
 
     configure_approle
     configure_audit_device
+
+    echo -e "\n--- Populating test secrets ---"
+    echo " - Writing test secret to secret/test-secret"
+    "$BIN_DIR/vault" kv put secret/test-secret message="Hello from Vault secret!" username="testuser"
+
+    echo " - Writing test secret to kv/test-secret"
+    "$BIN_DIR/vault" kv put kv/test-secret message="Hello from Vault kv!" database="testdb"
 }
 
 
-# --- Funzione: Mostra informazioni finali ---
+# --- Function: Display final information ---
 display_final_info() {
     echo -e "\n=================================================="
-    echo "VAULT DI LABORATORIO PRONTO ALL'USO!"
+    echo "LAB VAULT IS READY TO USE!"
     echo "=================================================="
 
-    echo -e "\nDETTAGLI ACCESSO PRINCIPALI:"
+    echo -e "\nMAIN ACCESS DETAILS:"
     echo "URL: $VAULT_ADDR"
-    echo "Root Token: root (salvato anche in $VAULT_DIR/root_token.txt)"
-    echo "Utente di esempio: devuser / devpass (con policy 'default')"
+    echo "Root Token: root (also saved in $VAULT_DIR/root_token.txt)"
+    echo "Example user: devuser / devpass (with 'default' policy)"
 
-    echo -e "\nDETTAGLI APPROLE 'web-application':"
+    echo -e "\nDETAILED ACCESS POINTS:"
+    echo "You can read the test secret from 'secret/test-secret' using:"
+    echo "  $BIN_DIR/vault kv get secret/test-secret"
+    echo "You can read the test secret from 'kv/test-secret' using:"
+    echo "  $BIN_DIR/vault kv get kv/test-secret"
+
+
+    echo -e "\nAPPROLE 'web-application' DETAILS:"
     echo "Role ID: $(cat "$VAULT_DIR/approle_role_id.txt")"
     echo "Secret ID: $(cat "$VAULT_DIR/approle_secret_id.txt")"
 
-    echo -e "\nStato attuale del Vault:"
+    echo -e "\nCurrent Vault status:"
     "$BIN_DIR/vault" status
 
-    echo -e "\nPer accedere a Vault UI/CLI, usa:"
+    echo -e "\nTo access Vault UI/CLI, use:"
     echo "export VAULT_ADDR=$VAULT_ADDR"
     echo "export VAULT_TOKEN=root"
-    echo "Oppure accedi alla UI all'indirizzo sopra e usa 'root' come token."
+    echo "Or access the UI at the above address and use 'root' as the token."
 
-    echo -e "\nPer testare l'autenticazione AppRole:"
+    echo -e "\nTo test AppRole authentication:"
     echo "export VAULT_ADDR=$VAULT_ADDR"
     echo "vault write auth/approle/login role_id=\"$(cat "$VAULT_DIR/approle_role_id.txt")\" secret_id=\"$(cat "$VAULT_DIR/approle_secret_id.txt")\""
-    echo "Ricorda che il Secret ID è monouso per le nuove creazioni, ma questo token è valido per il login."
+    echo "Remember that the Secret ID is single-use for new creations, but this token is valid for login."
 
-    echo -e "\nPer fermare il server: kill $LAB_VAULT_PID"
-    echo "O per fermare tutti i Vault in esecuzione: pkill -f \"vault server\""
+    echo -e "\nTo stop the server: kill $LAB_VAULT_PID"
+    echo "Or to stop all running Vault instances: pkill -f \"vault server\""
 
-    echo -e "\nBuon divertimento con Vault!"
+    echo -e "\nEnjoy your Vault!"
 }
 
 
-# --- Flusso Principale dello Script ---
+# --- Main Script Flow ---
 main() {
     cleanup_previous_environment
 
     mkdir -p "$BIN_DIR"
     if download_latest_vault_binary "$BIN_DIR" "linux_amd64"; then
-        echo "Il binario Vault è pronto per l'uso."
+        echo "Vault binary is ready for use."
     else
-        echo "La gestione automatica del binario Vault non è riuscita completamente."
+        echo "Automatic Vault binary management did not fully succeed."
         if [ -f "$BIN_DIR/vault" ]; then
-            echo "Verrà utilizzato il binario Vault esistente in $BIN_DIR/vault."
+            echo "Existing Vault binary in $BIN_DIR/vault will be used."
         else
-            echo "ERRORE FATALE: Nessun binario Vault disponibile. Scarica manualmente il binario desiderato e posizionalo in $BIN_DIR/vault."
+            echo "FATAL ERROR: No Vault binary available. Manually download the desired binary and place it in $BIN_DIR/vault."
             exit 1
         fi
     fi
@@ -380,5 +396,5 @@ main() {
     display_final_info
 }
 
-# Esegui la funzione principale
+# Execute the main function
 main
