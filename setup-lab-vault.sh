@@ -1,33 +1,43 @@
 #!/bin/bash
 
-# Script to configure a ready-to-use laboratory Vault environment.
-# - A single Vault instance.
-# - Already initialized and unsealed.
-# - Root token set to "root".
-# - Several common secrets engines enabled.
-# - AppRole enabled and configured with an example.
-# - Audit Device enabled.
-# - Automatically downloads the latest Vault version (excluding enterprise versions).
-# - Improved messaging for clarity on the download/update process.
-# - Checks and optionally installs prerequisites (curl, jq, unzip, lsof)
-#   based on OS, with user consent.
-# - Detects existing Vault lab environment and prompts user for cleanup or reuse,
-#   intelligently handling initialization and unsealing.
-
 # --- Global Configuration ---
-BASE_DIR="/mnt/c/Users/gomiero1/PycharmProjects/PythonProject/zero-to-vault-lab" # Your base directory
-BIN_DIR="$BASE_DIR/bin"
-VAULT_DIR="$BASE_DIR/vault-lab"
-VAULT_ADDR="http://127.0.0.1:8200" # Default Vault address
-LAB_VAULT_PID="" # Global variable for Vault PID
+BASE_DIR="/mnt/c/Users/gomiero1/PycharmProjects/PythonProject/zero-to-vault-lab" # Your base directory for the Vault lab
+BIN_DIR="$BASE_DIR/bin" # Directory where Vault binary will be stored
+VAULT_DIR="$BASE_DIR/vault-lab" # Working directory for Vault data, config, and keys
+VAULT_ADDR="http://127.0.0.1:8200" # Default Vault address for the lab environment
+LAB_VAULT_PID="" # Global variable to store the PID of the running Vault server
 
-# Path for the Audit Log (default path for the lab is /dev/null)
+# Path for the Audit Log (default for the lab is /dev/null for simplicity)
 # To enable auditing to a real file, change this variable. Example:
 # AUDIT_LOG_PATH="$VAULT_DIR/vault_audit.log"
 AUDIT_LOG_PATH="/dev/null"
 
 # --- Global Flags ---
-FORCE_CLEANUP_ON_START=false
+FORCE_CLEANUP_ON_START=false # Flag to force a clean setup, removing existing data
+VERBOSE_OUTPUT=false # Flag to enable more detailed output for debugging
+
+# --- Colors for better output ---
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+
+# --- Logging Functions ---
+# Logs informational messages in green
+log_info() {
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
+
+# Logs warning messages in yellow
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1" >&2
+}
+
+# Logs error messages in red and exits with an error code
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1" >&2
+    exit 1
+}
 
 # --- Function: Display Help Message ---
 display_help() {
@@ -39,6 +49,7 @@ display_help() {
     echo "  -c, --clean    Forces a clean setup, removing any existing Vault data"
     echo "                 in '$VAULT_DIR' before starting."
     echo "  -h, --help     Display this help message and exit."
+    echo "  -v, --verbose  Enable verbose output for troubleshooting (currently not fully implemented)."
     echo ""
     echo "Default Behavior (no options):"
     echo "  The script will detect an existing Vault lab in '$VAULT_DIR'."
@@ -47,7 +58,7 @@ display_help() {
     echo "Examples:"
     echo "  $0"
     echo "  $0 --clean"
-    echo "  $0 -c"
+    echo "  $0 -v"
     echo ""
     exit 0 # Exit after displaying help
 }
@@ -55,9 +66,9 @@ display_help() {
 
 # --- Function: Check and Install Prerequisites ---
 check_and_install_prerequisites() {
-    echo "=================================================="
-    echo "CHECKING PREREQUISITES"
-    echo "=================================================="
+    log_info "=================================================="
+    log_info "CHECKING PREREQUISITES"
+    log_info "=================================================="
 
     local missing_pkgs=()
     local install_cmd=""
@@ -77,11 +88,11 @@ check_and_install_prerequisites() {
     done
 
     if [ ${#missing_pkgs[@]} -eq 0 ]; then
-        echo "All necessary prerequisites (curl, jq, unzip, lsof) are already installed. 👍"
+        log_info "All necessary prerequisites (curl, jq, unzip, lsof) are already installed. 👍"
         return 0 # All good
     fi
 
-    echo -e "\nWARNING: The following prerequisite packages are missing: ${missing_pkgs[*]}"
+    log_warn "The following prerequisite packages are missing: ${missing_pkgs[*]}"
 
     # Determine installation command based on OS
     case "$os_type" in
@@ -100,83 +111,61 @@ check_and_install_prerequisites() {
             if command -v brew &> /dev/null; then
                 install_cmd="brew install"
             else
-                echo "Homebrew is not installed. Please install Homebrew (https://brew.sh/) to proceed."
-                echo "Then run: brew install ${missing_pkgs[*]}"
-                read -p "Do you want to proceed without installing missing packages? (y/N): " choice
-                if [[ "$choice" =~ ^[Yy]$ ]]; then
-                    echo "Proceeding without installing missing packages. This may cause errors. 🚧"
-                    return 0
-                else
-                    echo "Exiting. Please install missing prerequisites manually. 👋"
-                    exit 1
-                fi
+                log_error "Homebrew is not installed. Please install Homebrew (https://brew.sh/) to proceed."
             fi
             ;;
         MINGW64_NT*) # Git Bash on Windows
-            echo "Detected Git Bash on Windows. Please install missing packages manually using 'choco' or equivalent:"
-            echo "choco install ${missing_pkgs[*]}"
+            log_warn "Detected Git Bash on Windows. Please install missing packages manually using 'choco' or equivalent (e.g., choco install ${missing_pkgs[*]})."
             read -p "Do you want to proceed without installing missing packages? (y/N): " choice
             if [[ "$choice" =~ ^[Yy]$ ]]; then
-                echo "Proceeding without installing missing packages. This may cause errors. 🚧"
+                log_warn "Proceeding without installing missing packages. This may cause errors. 🚧"
                 return 0
             else
-                echo "Exiting. Please install missing prerequisites manually. 👋"
-                exit 1
+                log_error "Exiting. Please install missing prerequisites manually. 👋"
             fi
             ;;
         *)
-            echo "Unsupported OS type: $os_type. Please install missing packages manually: ${missing_pkgs[*]} 🤷"
+            log_warn "Unsupported OS type: $os_type. Please install missing packages manually: ${missing_pkgs[*]} 🤷"
             read -p "Do you want to proceed without installing missing packages? (y/N): " choice
             if [[ "$choice" =~ ^[Yy]$ ]]; then
-                echo "Proceeding without installing missing packages. This may cause errors. 🚧"
+                log_warn "Proceeding without installing missing packages. This may cause errors. 🚧"
                 return 0
             else
-                echo "Exiting. Please install missing prerequisites manually. 👋"
-                exit 1
+                log_error "Exiting. Please install missing prerequisites manually. 👋"
             fi
             ;;
     esac
 
     if [ -z "$install_cmd" ]; then
-        echo "Could not determine an automatic installation command for your system."
-        echo "Please install these packages manually: ${missing_pkgs[*]}"
-        read -p "Do you want to proceed without installing missing packages? (y/N): " choice
-        if [[ "$choice" =~ ^[Yy]$ ]]; then
-            echo "Proceeding without installing missing packages. This may cause errors. 🚧"
-            return 0
-        else
-            echo "Exiting. Please install missing prerequisites manually. 👋"
-            exit 1
-        fi
+        log_error "Could not determine an automatic installation command for your system."
+        log_error "Please install these packages manually: ${missing_pkgs[*]}"
     fi
 
     echo -e "\nTo ensure proper functioning, this script needs to install the missing packages."
     read -p "Do you want to install them now? (y/N): " choice
 
     if [[ "$choice" =~ ^[Yy]$ ]]; then
-        echo "Installing missing packages: ${missing_pkgs[*]}..."
+        log_info "Installing missing packages: ${missing_pkgs[*]}..."
         if eval "$install_cmd ${missing_pkgs[*]}"; then
-            echo "Prerequisites installed successfully! 🎉"
+            log_info "Prerequisites installed successfully! 🎉"
             for cmd_name in "${!pkg_map[@]}"; do
                 if ! command -v "${pkg_map[$cmd_name]}" &> /dev/null; then
-                    echo "WARNING: ${pkg_map[$cmd_name]} still missing after installation attempt. This might cause issues. ⚠️"
+                    log_warn "${pkg_map[$cmd_name]} still missing after installation attempt. This might cause issues. ⚠️"
                 fi
             done
         else
-            echo "ERROR: Failed to install prerequisites. Please install them manually and re-run the script. ❌"
-            exit 1
+            log_error "Failed to install prerequisites. Please install them manually and re-run the script. ❌"
         fi
     else
-        echo "Installation skipped. This script may not function correctly without these packages. 🤷"
+        log_warn "Installation skipped. This script may not function correctly without these packages. 🤷"
         read -p "Do you still want to proceed? (y/N): " choice_proceed
         if [[ "$choice_proceed" =~ ^[Yy]$ ]]; then
-            echo "Proceeding at your own risk. 🚧"
+            log_warn "Proceeding at your own risk. 🚧"
         else
-            echo "Exiting. Please install missing prerequisites manually. 👋"
-            exit 1
+            log_error "Exiting. Please install missing prerequisites manually. 👋"
         fi
     fi
-    echo "=================================================="
+    log_info "=================================================="
 }
 
 
@@ -200,80 +189,82 @@ download_latest_vault_binary() {
     local temp_dir=$(mktemp -d)
     local success=1
 
-    echo "=================================================="
-    echo "VAULT BINARY MANAGEMENT: CHECK AND DOWNLOAD"
-    echo "=================================================="
+    log_info "=================================================="
+    log_info "VAULT BINARY MANAGEMENT: CHECK AND DOWNLOAD"
+    log_info "=================================================="
 
     local vault_releases_json
     vault_releases_json=$(curl -s "https://releases.hashicorp.com/vault/index.json")
 
     if [ -z "$vault_releases_json" ]; then
-        echo "Error: 'curl' received no data from HashiCorp URL. Check internet connection or URL: https://releases.hashicorp.com/vault/index.json"
+        log_error "Error: 'curl' received no data from HashiCorp URL. Check internet connection or URL: https://releases.hashicorp.com/vault/index.json"
         rm -rf "$temp_dir"
         return 1
     fi
 
     local latest_version
+    # Extract the latest non-enterprise version using jq
     latest_version=$(echo "$vault_releases_json" | \
                      tr -d '\r' | \
                      jq -r '.versions | to_entries | .[] | select(.key | contains("ent") | not) | .value.version' | \
                      sort -V | tail -n 1)
 
     if [ -z "$latest_version" ]; then
-        echo "Error: Could not determine the latest Vault version. JSON structure might have changed or no match found."
+        log_error "Error: Could not determine the latest Vault version. JSON structure might have changed or no match found."
         rm -rf "$temp_dir"
         return 1
     fi
 
-    echo "Latest available version (excluding Enterprise): $latest_version"
+    log_info "Latest available version (excluding Enterprise): $latest_version"
 
     if [ -f "$vault_exe" ]; then
         local current_version
+        # Get current Vault binary version
         current_version=$("$vault_exe" version -short 2>/dev/null | awk '{print $2}')
-        current_version=${current_version#v}
+        current_version=${current_version#v} # Remove 'v' prefix
 
         if [ "$current_version" == "$latest_version" ]; then
-            echo "Current Vault binary (v$current_version) is already the latest version available."
-            echo "No download or update needed. Existing binary will be used."
+            log_info "Current Vault binary (v$current_version) is already the latest version available."
+            log_info "No download or update needed. Existing binary will be used."
             rm -rf "$temp_dir"
             return 0
         else
-            echo "Current Vault binary is v$current_version. Latest available version is v$latest_version."
-            echo "Proceeding with update..."
+            log_info "Current Vault binary is v$current_version. Latest available version is v$latest_version."
+            log_info "Proceeding with update..."
         fi
     else
-        echo "No Vault binary found in $bin_dir. Proceeding with downloading the latest version."
+        log_info "No Vault binary found in $bin_dir. Proceeding with downloading the latest version."
     fi
 
     local download_url="https://releases.hashicorp.com/vault/${latest_version}/vault_${latest_version}_${platform}.zip"
     local zip_file="$temp_dir/vault.zip"
 
-    echo "Downloading Vault v$latest_version for $platform from $download_url..."
+    log_info "Downloading Vault v$latest_version for $platform from $download_url..."
     if ! curl -fsSL -o "$zip_file" "$download_url"; then
-        echo "Error: Failed to download Vault from $download_url. Check internet connection or URL."
+        log_error "Error: Failed to download Vault from $download_url. Check internet connection or URL."
         rm -rf "$temp_dir"
         return 1
     fi
 
-    echo "Extracting the binary..."
+    log_info "Extracting the binary..."
     if ! unzip -o "$zip_file" -d "$temp_dir" >/dev/null; then
-        echo "Error: Failed to extract the zip file. Ensure 'unzip' is installed and functional."
+        log_error "Error: Failed to extract the zip file. Ensure 'unzip' is installed and functional."
         rm -rf "$temp_dir"
         return 1
     fi
 
     if [ -f "$temp_dir/vault" ]; then
-        echo "Moving and configuring the new Vault binary to $bin_dir..."
-        mkdir -p "$bin_dir"
+        log_info "Moving and configuring the new Vault binary to $bin_dir..."
+        mkdir -p "$bin_dir" # Ensure bin directory exists
         mv "$temp_dir/vault" "$vault_exe"
-        chmod +x "$vault_exe"
+        chmod +x "$vault_exe" # Make the binary executable
         success=0
-        echo "Vault v$latest_version downloaded and configured successfully."
+        log_info "Vault v$latest_version downloaded and configured successfully. 🎉"
     else
-        echo "Error: 'vault' binary not found in the extracted archive."
+        log_error "Error: 'vault' binary not found in the extracted archive."
     fi
 
-    rm -rf "$temp_dir"
+    rm -rf "$temp_dir" # Clean up temporary directory
     return $success
 }
 
@@ -283,69 +274,88 @@ wait_for_vault_up() {
   local timeout=30
   local elapsed=0
 
-  echo "Waiting for Vault to listen on $addr..."
+  log_info "Waiting for Vault to listen on $addr..."
   while [[ $elapsed -lt $timeout ]]; do
+    # Check if Vault's health endpoint (seal-status) returns 200 OK
     if curl -s -o /dev/null -w "%{http_code}" "$addr/v1/sys/seal-status" | grep -q "200"; then
-      echo "Vault is listening and responding to APIs after $elapsed seconds. ✅"
+      log_info "Vault is listening and responding to APIs after $elapsed seconds. ✅"
       return 0
     fi
     sleep 1
-    echo -n "."
+    echo -n "." # Progress indicator
     ((elapsed++))
   done
-  echo -e "\nVault did not become reachable after $timeout seconds. Check logs ($VAULT_DIR/vault.log). ❌"
+  log_error "Vault did not become reachable after $timeout seconds. Check logs ($VAULT_DIR/vault.log). ❌"
   return 1 # Indicate failure
 }
 
 # --- Function: Clean up previous environment ---
 cleanup_previous_environment() {
-    echo "=================================================="
-    echo "FULL CLEANUP OF PREVIOUS LAB ENVIRONMENT"
-    echo "=================================================="
+    log_info "=================================================="
+    log_info "FULL CLEANUP OF PREVIOUS LAB ENVIRONMENT"
+    log_info "=================================================="
 
-    echo "Stopping all Vault processes listening on port 8200..."
+    log_info "Stopping all Vault processes listening on port 8200..."
     local vault_pid=$(lsof -ti:8200 2>/dev/null)
     if [ -n "$vault_pid" ]; then
-        kill -9 "$vault_pid" >/dev/null 2>&1
-        echo "Killed Vault process (PID: $vault_pid)."
-        sleep 1 # Give it a moment to release the port
+        # Attempt graceful shutdown first
+        log_info "Attempting graceful shutdown of Vault process (PID: $vault_pid)..."
+        kill "$vault_pid" >/dev/null 2>&1
+        sleep 5 # Give it a few seconds to shut down gracefully
+        if lsof -ti:8200 &>/dev/null; then # Check if process is still running
+            log_warn "Vault process (PID: $vault_pid) did not shut down gracefully. Forcing kill..."
+            kill -9 "$vault_pid" >/dev/null 2>&1
+            sleep 1 # Give it a moment to release the port
+        fi
+        if ! lsof -ti:8200 &>/dev/null; then
+            log_info "Vault process (PID: $vault_pid) stopped. ✅"
+        else
+            log_error "Vault process (PID: $vault_pid) could not be stopped. Manual intervention may be required. 🛑"
+        fi
     else
-        echo "No Vault process found on port 8200."
+        log_info "No Vault process found on port 8200."
     fi
 
-    echo "Deleting previous working directories..."
+    log_info "Deleting previous working directories: $VAULT_DIR..."
     rm -rf "$VAULT_DIR"
+    if [ $? -ne 0 ]; then
+        log_error "Failed to remove '$VAULT_DIR'. Check permissions. ❌"
+    fi
 
-    echo "Recreating empty directories..."
+    log_info "Recreating empty directories: $VAULT_DIR..."
     mkdir -p "$VAULT_DIR"
+    if [ $? -ne 0 ]; then
+        log_error "Failed to create '$VAULT_DIR'. Check permissions. ❌"
+    fi
+    log_info "Cleanup completed. ✅"
 }
 
 # --- Function: Configure and start Vault ---
 configure_and_start_vault() {
-    echo -e "\n=================================================="
-    echo "CONFIGURING LAB VAULT (SINGLE INSTANCE)"
-    echo "=================================================="
+    log_info "\n=================================================="
+    log_info "CONFIGURING LAB VAULT (SINGLE INSTANCE)"
+    log_info "=================================================="
+
+    local vault_port=$(echo "$VAULT_ADDR" | cut -d':' -f3)
 
     # Ensure Vault is not already running on the port
-    if lsof -ti:"$(echo "$VAULT_ADDR" | cut -d':' -f3)" >/dev/null; then
-        echo "Vault process already running on port $(echo "$VAULT_ADDR" | cut -d':' -f3). Stopping it first."
-        local vault_pid=$(lsof -ti:"$(echo "$VAULT_ADDR" | cut -d':' -f3)" 2>/dev/null)
-        if [ -n "$vault_pid" ]; then
-            kill -9 "$vault_pid" >/dev/null 2>&1
+    if lsof -ti:"$vault_port" >/dev/null; then
+        log_warn "Vault process already running on port $vault_port. Stopping it first."
+        local vault_pid_to_stop=$(lsof -ti:"$vault_port" 2>/dev/null)
+        if [ -n "$vault_pid_to_stop" ]; then
+            kill -9 "$vault_pid_to_stop" >/dev/null 2>&1
             sleep 2
-            if lsof -ti:"$(echo "$VAULT_ADDR" | cut -d':' -f3)" >/dev/null; then
-                echo "ERROR: Could not stop existing Vault process. Manual intervention required. 🛑"
-                exit 1
+            if lsof -ti:"$vault_port" >/dev/null; then
+                log_error "Could not stop existing Vault process (PID: $vault_pid_to_stop). Manual intervention required. 🛑"
             fi
-            echo "Existing Vault process stopped. ✅"
+            log_info "Existing Vault process stopped. ✅"
         else
-            echo "No Vault process found to stop, but port is in use. May be another application. ⚠️"
-            echo "Please ensure port 8200 is free."
-            exit 1
+            log_warn "No Vault process found to stop, but port $vault_port is in use. May be another application. ⚠️"
+            log_error "Please ensure port $vault_port is free."
         fi
     fi
 
-    echo "Configuring Vault file..."
+    log_info "Configuring Vault HCL file: $VAULT_DIR/config.hcl"
     cat > "$VAULT_DIR/config.hcl" <<EOF
 storage "file" {
   path = "$VAULT_DIR/storage"
@@ -357,27 +367,28 @@ listener "tcp" {
 }
 
 api_addr = "http://127.0.0.1:8200"
-cluster_addr = "http://127.0.0.1:8201"
+cluster_addr = "http://127.0.0.1:8201" # Required even for single instance for internal reasons
 ui = true
 EOF
 
-    echo "Starting Vault server in background..."
+    log_info "Starting Vault server in background..."
     local vault_exe="$BIN_DIR/vault"
     if [[ "$(uname -s)" == *"MINGW"* ]]; then
         vault_exe="$BIN_DIR/vault.exe"
     fi
 
+    # Start Vault server, redirecting output to a log file
     "$vault_exe" server -config="$VAULT_DIR/config.hcl" > "$VAULT_DIR/vault.log" 2>&1 &
-    LAB_VAULT_PID=$!
-    echo "Vault server PID: $LAB_VAULT_PID"
+    LAB_VAULT_PID=$! # Store the PID of the background process
+    log_info "Vault server PID: $LAB_VAULT_PID"
 
+    # Wait for Vault to come up and be reachable
     if ! wait_for_vault_up "$VAULT_ADDR"; then
-        echo "ERROR: Vault server failed to start or respond. Check $VAULT_DIR/vault.log ❌"
-        exit 1
+        log_error "Vault server failed to start or respond. Check $VAULT_DIR/vault.log ❌"
     fi
 }
 
-# --- Function: Get Vault Status ---
+# --- Function: Get Vault Status (JSON output) ---
 get_vault_status() {
     local vault_exe="$BIN_DIR/vault"
     if [[ "$(uname -s)" == *"MINGW"* ]]; then
@@ -394,28 +405,29 @@ wait_for_unseal_ready() {
   local timeout=30
   local elapsed=0
 
-  echo "Waiting for Vault to be fully unsealed and operational for APIs..."
+  log_info "Waiting for Vault to be fully unsealed and operational for APIs..."
 
   while [[ $elapsed -lt $timeout ]]; do
     local status_json=$(get_vault_status)
-    if echo "$status_json" | jq -e '.sealed == false' &>/dev/null; then
-      echo "Vault is unsealed and operational after $elapsed seconds. ✅"
+    # Check if Vault is initialized AND not sealed
+    if echo "$status_json" | jq -e '.initialized == true and .sealed == false' &>/dev/null; then
+      log_info "Vault is unsealed and operational after $elapsed seconds. ✅"
       return 0
     fi
     sleep 1
-    echo -n "."
+    echo -n "." # Progress indicator
     ((elapsed++))
   done
-  echo -e "\nVault did not become operational (still sealed) after $timeout seconds. Manual intervention may be required. ❌"
+  log_error "Vault did not become operational (still sealed or not initialized) after $timeout seconds. Manual intervention may be required. ❌"
   return 1 # Indicate failure
 }
 
 
 # --- Function: Initialize and unseal Vault ---
 initialize_and_unseal_vault() {
-    echo -e "\n=================================================="
-    echo "INITIALIZING AND UNSEALING VAULT"
-    echo "=================================================="
+    log_info "\n=================================================="
+    log_info "INITIALIZING AND UNSEALING VAULT"
+    log_info "=================================================="
 
     export VAULT_ADDR="$VAULT_ADDR" # Ensure VAULT_ADDR is set for vault commands
     local vault_exe="$BIN_DIR/vault"
@@ -424,18 +436,21 @@ initialize_and_unseal_vault() {
     fi
 
     local current_status_json=$(get_vault_status)
+    if [ -z "$current_status_json" ]; then
+        log_error "Could not get Vault status. Is Vault server running and reachable?"
+    fi
+
     local is_initialized=$(echo "$current_status_json" | jq -r '.initialized')
     local is_sealed=$(echo "$current_status_json" | jq -r '.sealed')
 
     if [ "$is_initialized" == "true" ]; then
-        echo "Vault is already initialized. Skipping initialization. ✅"
+        log_info "Vault is already initialized. Skipping initialization. ✅"
     else
-        echo "Initializing Vault..."
+        log_info "Initializing Vault with 1 key share and 1 key threshold..."
         local INIT_OUTPUT
         INIT_OUTPUT=$("$vault_exe" operator init -key-shares=1 -key-threshold=1 -format=json)
         if [ $? -ne 0 ]; then
-            echo "ERROR: Vault initialization failed. Please check $VAULT_DIR/vault.log for details. ❌"
-            exit 1
+            log_error "Vault initialization failed. Please check $VAULT_DIR/vault.log for details. ❌"
         fi
 
         local ROOT_TOKEN_VAULT=$(echo "$INIT_OUTPUT" | jq -r '.root_token')
@@ -443,39 +458,36 @@ initialize_and_unseal_vault() {
 
         echo "$ROOT_TOKEN_VAULT" > "$VAULT_DIR/root_token.txt"
         echo "$UNSEAL_KEY_VAULT" > "$VAULT_DIR/unseal_key.txt"
-        echo "Vault initialized. Root Token and Unseal Key saved in $VAULT_DIR. 🔑"
+        log_info "Vault initialized. Root Token and Unseal Key saved in $VAULT_DIR. 🔑"
 
-        # After initialization, Vault IS sealed. Update state variables.
-        current_status_json=$(get_vault_status) # Get updated status
+        # After initialization, Vault IS sealed. Get updated status.
+        current_status_json=$(get_vault_status)
         is_sealed=$(echo "$current_status_json" | jq -r '.sealed')
     fi
 
     if [ "$is_sealed" == "true" ]; then
-        echo "Vault is sealed. Attempting to unseal..."
+        log_info "Vault is sealed. Attempting to unseal..."
         if [ -f "$VAULT_DIR/unseal_key.txt" ]; then
             local UNSEAL_KEY_STORED=$(cat "$VAULT_DIR/unseal_key.txt")
             if [ -z "$UNSEAL_KEY_STORED" ]; then
-                echo "ERROR: Unseal key file ($VAULT_DIR/unseal_key.txt) exists but is empty. Cannot unseal. ❌"
-                exit 1
+                log_error "Unseal key file ($VAULT_DIR/unseal_key.txt) exists but is empty. Cannot unseal. ❌"
             fi
             "$vault_exe" operator unseal "$UNSEAL_KEY_STORED" >/dev/null
             if [ $? -ne 0 ]; then
-                echo "ERROR: Vault unseal failed with stored key. Manual unseal may be required. ❌"
-                exit 1
+                log_error "Vault unseal failed with stored key. Manual unseal may be required. ❌"
             fi
-            echo "Vault unsealed successfully using stored key. ✅"
+            log_info "Vault unsealed successfully using stored key. ✅"
         else
-            echo "WARNING: Vault is sealed but no unseal_key.txt found in $VAULT_DIR. Cannot unseal automatically. ⚠️"
-            echo "Please unseal Vault manually using 'vault operator unseal <KEY>'."
-            exit 1 # Exit if cannot auto-unseal for lab setup
+            log_error "Vault is sealed but no unseal_key.txt found in $VAULT_DIR. Cannot unseal automatically. ⚠️"
+            log_error "Please unseal Vault manually using 'vault operator unseal <KEY>'."
         fi
     else
-        echo "Vault is already unsealed. Skipping unseal. ✅"
+        log_info "Vault is already unsealed. Skipping unseal. ✅"
     fi
 
+    # Final check for unsealed state
     if ! wait_for_unseal_ready "$VAULT_ADDR"; then
-        echo "ERROR: Vault did not reach unsealed state after initialization/unseal attempts. Exiting. ❌"
-        exit 1
+        log_error "Vault did not reach unsealed state after initialization/unseal attempts. Exiting. ❌"
     fi
 
     # Set the VAULT_TOKEN for subsequent operations
@@ -484,57 +496,51 @@ initialize_and_unseal_vault() {
         if [ -n "$initial_root_token" ]; then
             export VAULT_TOKEN="$initial_root_token"
         else
-            echo "WARNING: $VAULT_DIR/root_token.txt is empty. Cannot set initial VAULT_TOKEN. ⚠️"
+            log_warn "$VAULT_DIR/root_token.txt is empty. Cannot set initial VAULT_TOKEN. ⚠️"
         fi
     else
-        echo "WARNING: $VAULT_DIR/root_token.txt not found. Cannot set initial VAULT_TOKEN. ⚠️"
+        log_warn "$VAULT_DIR/root_token.txt not found. Cannot set initial VAULT_TOKEN. ⚠️"
     fi
 
-    # Now, try to create or ensure the 'root' token with ID "root"
-    echo "Ensuring 'root' token with ID 'root' for lab use..."
+    # Ensure the 'root' token with ID "root" is set up for lab ease of use
+    log_info "Ensuring 'root' token with ID 'root' for lab use..."
     # Check if a token with ID 'root' exists and is valid
-    # Use the current VAULT_TOKEN (the one generated or pre-existing) for this check/creation
     if "$vault_exe" token lookup "root" &>/dev/null; then
-        echo "Root token 'root' already exists. ✅"
+        log_info "Root token 'root' already exists. ✅"
         export VAULT_TOKEN="root" # Switch to the simpler "root" token if it exists
     else
-        echo "Creating 'root' token with ID 'root'..."
-        # If the root_token.txt file exists and is not "root", use that for the creation command.
-        # Otherwise, rely on the VAULT_TOKEN exported above.
-        local token_for_create="$VAULT_TOKEN"
-        if [ -f "$VAULT_DIR/root_token.txt" ] && [ "$(cat "$VAULT_DIR/root_token.txt")" != "root" ]; then
-            token_for_create=$(cat "$VAULT_DIR/root_token.txt")
-        fi
-
-        # Temporarily use the full token to create the "root" token
-        local temp_vault_token="$VAULT_TOKEN"
-        export VAULT_TOKEN="$token_for_create"
+        log_info "Creating 'root' token with ID 'root'..."
+        # Use the initial generated token to create the "root" token
+        local temp_vault_token="$VAULT_TOKEN" # Store current token
+        export VAULT_TOKEN="$initial_root_token" # Use initial token for creation
 
         "$vault_exe" token create -id="root" -policy="root" -no-default-policy -display-name="laboratory-root" >/dev/null
         if [ $? -eq 0 ]; then
-            echo "Root token with ID 'root' created successfully. ✅"
+            log_info "Root token with ID 'root' created successfully. ✅"
             echo "root" > "$VAULT_DIR/root_token.txt" # Overwrite for future use
             export VAULT_TOKEN="root" # Set VAULT_TOKEN to the simple "root"
         else
-            echo "WARNING: Failed to create 'root' token with ID 'root'. Falling back to initial generated token. ⚠️"
+            log_warn "Failed to create 'root' token with ID 'root'. Falling back to initial generated token. ⚠️"
             export VAULT_TOKEN="$temp_vault_token" # Revert to initial token
         fi
     fi
 }
 
 
-# --- Function: Configure AppRole ---
+# --- Function: Configure AppRole Auth Method ---
 configure_approle() {
-    echo -e "\nEnabling and configuring AppRole Auth Method..."
+    log_info "\nEnabling and configuring AppRole Auth Method..."
 
     local vault_exe="$BIN_DIR/vault"
     if [[ "$(uname -s)" == *"MINGW"* ]]; then
         vault_exe="$BIN_DIR/vault.exe"
     fi
 
-    echo " - Enabling Auth Method 'approle' at 'approle/'"
-    "$vault_exe" auth enable approle &>/dev/null # Suppress output if already enabled
+    log_info " - Enabling Auth Method 'approle' at 'approle/'"
+    # Enable auth method, redirecting stdout/stderr as it might output "already enabled"
+    "$vault_exe" auth enable approle &>/dev/null
 
+    # Define a policy for AppRole
     cat > "$VAULT_DIR/approle-policy.hcl" <<EOF
 path "secret/my-app/*" {
   capabilities = ["read", "list"]
@@ -544,10 +550,10 @@ path "secret/other-data" {
 }
 EOF
 
-    echo " - Creating 'my-app-policy' policy for AppRole..."
+    log_info " - Creating 'my-app-policy' policy for AppRole..."
     "$vault_exe" policy write my-app-policy "$VAULT_DIR/approle-policy.hcl" &>/dev/null
 
-    echo " - Creating AppRole 'web-application' role..."
+    log_info " - Creating AppRole 'web-application' role..."
     "$vault_exe" write auth/approle/role/web-application \
         token_policies="default,my-app-policy" \
         token_ttl="1h" \
@@ -555,120 +561,194 @@ EOF
 
     local ROLE_ID
     ROLE_ID=$("$vault_exe" read -field=role_id auth/approle/role/web-application/role-id)
-    echo "   Role ID for 'web-application': $ROLE_ID (saved in $VAULT_DIR/approle_role_id.txt)"
-    echo "$ROLE_ID" > "$VAULT_DIR/approle_role_id.txt"
+    if [ -z "$ROLE_ID" ]; then
+        log_warn "Could not retrieve AppRole Role ID. AppRole setup might have issues. ⚠️"
+    else
+        log_info "   Role ID for 'web-application': $ROLE_ID (saved in $VAULT_DIR/approle_role_id.txt)"
+        echo "$ROLE_ID" > "$VAULT_DIR/approle_role_id.txt"
+    fi
 
     local SECRET_ID
     SECRET_ID=$("$vault_exe" write -f -field=secret_id auth/approle/role/web-application/secret-id)
-    echo "   Secret ID for 'web-application': $SECRET_ID (saved in $VAULT_DIR/approle_secret_id.txt)"
-    echo "$SECRET_ID" > "$VAULT_DIR/approle_secret_id.txt"
+    if [ -z "$SECRET_ID" ]; then
+        log_warn "Could not retrieve AppRole Secret ID. AppRole setup might have issues. ⚠️"
+    else
+        log_info "   Secret ID for 'web-application': $SECRET_ID (saved in $VAULT_DIR/approle_secret_id.txt)"
+        echo "$SECRET_ID" > "$VAULT_DIR/approle_secret_id.txt"
+    fi
 
-    echo "AppRole configuration completed for role 'web-application'."
+    log_info "AppRole configuration completed for role 'web-application'."
 }
 
 
 # --- Function: Configure Audit Device (uses global variable AUDIT_LOG_PATH) ---
 configure_audit_device() {
-    echo -e "\nEnabling and configuring an Audit Device..."
+    log_info "\nEnabling and configuring an Audit Device..."
     local vault_exe="$BIN_DIR/vault"
     if [[ "$(uname -s)" == *"MINGW"* ]]; then
         vault_exe="$BIN_DIR/vault.exe"
     fi
 
-    echo " - Enabling file audit device at '$AUDIT_LOG_PATH'"
+    log_info " - Enabling file audit device at '$AUDIT_LOG_PATH'"
     local audit_status=$("$vault_exe" audit list -format=json 2>/dev/null | jq -r '.["file/"]' 2>/dev/null)
     if [ "$audit_status" == "null" ] || [ -z "$audit_status" ]; then
         "$vault_exe" audit enable file file_path="$AUDIT_LOG_PATH" &>/dev/null
-        echo "Audit Device configured. Logs will be written to $AUDIT_LOG_PATH"
+        log_info "Audit Device configured. Logs will be written to $AUDIT_LOG_PATH"
     else
-        echo "Audit Device already enabled. Path: $AUDIT_LOG_PATH ✅"
+        log_info "Audit Device already enabled. Path: $AUDIT_LOG_PATH ✅"
     fi
 }
 
 
 # --- Function: Enable and configure common features ---
 configure_vault_features() {
-    echo -e "\nEnabling and configuring common features..."
+    log_info "\nEnabling and configuring common Vault features..."
 
     local vault_exe="$BIN_DIR/vault"
     if [[ "$(uname -s)" == *"MINGW"* ]]; then
         vault_exe="$BIN_DIR/vault.exe"
     fi
 
-    echo " - Enabling KV v2 secrets engine at 'secret/'"
+    log_info " - Enabling KV v2 secrets engine at 'secret/'"
     "$vault_exe" secrets enable -path=secret kv-v2 &>/dev/null
 
-    echo " - Enabling KV v2 secrets engine at 'kv/'"
+    log_info " - Enabling KV v2 secrets engine at 'kv/'"
     "$vault_exe" secrets enable -path=kv kv-v2 &>/dev/null
 
-    echo " - Enabling PKI secrets engine at 'pki/'"
+    log_info " - Enabling PKI secrets engine at 'pki/'"
     "$vault_exe" secrets enable pki &>/dev/null
-    "$vault_exe" secrets tune -max-lease-ttl=87600h pki &>/dev/null
+    "$vault_exe" secrets tune -max-lease-ttl=87600h pki &>/dev/null # Set a long TTL for PKI certs
 
-    echo " - Enabling 'userpass' Auth Method at 'userpass/'"
+    log_info " - Enabling 'userpass' Auth Method at 'userpass/'"
     "$vault_exe" auth enable userpass &>/dev/null
 
-    echo " - Creating example user 'devuser' with password 'devpass'"
+    log_info " - Creating example user 'devuser' with password 'devpass'"
+    # Create user; suppress output if it already exists or fails
     "$vault_exe" write auth/userpass/users/devuser password=devpass policies=default &>/dev/null || \
-      echo "User 'devuser' already exists or failed to create."
+      log_warn "User 'devuser' already exists or failed to create."
 
-    configure_approle
-    configure_audit_device
+    configure_approle # Call function to set up AppRole
+    configure_audit_device # Call function to set up Audit Device
 
-    echo -e "\n--- Populating test secrets ---"
-    echo " - Writing test secret to secret/test-secret"
+    log_info "\n--- Populating test secrets ---"
+    log_info " - Writing test secret to secret/test-secret"
     "$vault_exe" kv put secret/test-secret message="Hello from Vault secret!" username="testuser" &>/dev/null
 
-    echo " - Writing test secret to kv/test-secret"
+    log_info " - Writing test secret to kv/test-secret"
     "$vault_exe" kv put kv/test-secret message="Hello from Vault kv!" database="testdb" &>/dev/null
 }
 
 
-# --- Function: Display final information ---
-display_final_info() {
-    echo -e "\n=================================================="
-    echo "LAB VAULT IS READY TO USE!"
-    echo "=================================================="
+# --- Function: Handle existing lab environment detection ---
+handle_existing_lab() {
+    local existing_vault_dir_found=false
+    # Check if the VAULT_DIR exists and contains any files/directories
+    if [ -d "$VAULT_DIR" ] && [ "$(ls -A "$VAULT_DIR" 2>/dev/null)" ]; then
+        existing_vault_dir_found=true
+    fi
 
-    echo -e "\nMAIN ACCESS DETAILS:"
-    echo "URL: $VAULT_ADDR"
-    echo "Root Token: root (also saved in $VAULT_DIR/root_token.txt)"
-    echo "Example user: devuser / devpass (with 'default' policy)"
+    if [ "$existing_vault_dir_found" = true ]; then
+        if [ "$FORCE_CLEANUP_ON_START" = true ]; then
+            log_info "\nForce clean option activated. Cleaning up old Vault data..."
+            cleanup_previous_environment
+        else
+            log_warn "\nAn existing Vault lab environment was detected in '$VAULT_DIR'."
+            read -p "Do you want to clean it up and start from scratch? (y/N): " choice
+            case "$choice" in
+                y|Y )
+                    cleanup_previous_environment
+                    ;;
+                * )
+                    log_info "Skipping full data cleanup. Attempting to re-use existing data."
+                    log_info "Note: Re-using will ensure Vault is running, initialized, unsealed, and configurations reapplied."
 
-    echo -e "\nDETAILED ACCESS POINTS:"
-    echo "You can read the test secret from 'secret/test-secret' using:"
-    echo "  $BIN_DIR/vault kv get secret/test-secret"
-    echo "You can read the test secret from 'kv/test-secret' using:"
-    echo "  $BIN_DIR/vault kv get kv/test-secret"
+                    # Ensure bin directory exists and Vault binary is downloaded/updated
+                    mkdir -p "$BIN_DIR" || log_error "Failed to create $BIN_DIR."
+                    download_latest_vault_binary "$BIN_DIR"
 
+                    # Ensure Vault is started and its PID is set
+                    configure_and_start_vault
 
-    echo -e "\nAPPROLE 'web-application' DETAILS:"
-    echo "Role ID: $(cat "$VAULT_DIR/approle_role_id.txt")"
-    echo "Secret ID: $(cat "$VAULT_DIR/approle_secret_id.txt")"
+                    # Intelligently initialize/unseal based on current Vault status
+                    initialize_and_unseal_vault
 
-    echo -e "\nCurrent Vault status:"
-    "$BIN_DIR/vault" status
+                    # Re-apply configurations idempotently
+                    configure_vault_features
 
-    echo -e "\nTo access Vault UI/CLI, use:"
-    echo "export VAULT_ADDR=$VAULT_ADDR"
-    echo "export VAULT_TOKEN=root"
-    echo "Or access the UI at the above address and use 'root' as the token."
-
-    echo -e "\nTo test AppRole authentication:"
-    echo "export VAULT_ADDR=$VAULT_ADDR"
-    echo "vault write auth/approle/login role_id=\"$(cat "$VAULT_DIR/approle_role_id.txt")\" secret_id=\"$(cat "$VAULT_DIR/approle_secret_id.txt")\""
-    echo "Remember that the Secret ID is single-use for new creations, but this token is valid for login."
-
-    echo -e "\nTo stop the server: kill $LAB_VAULT_PID"
-    echo "Or to stop all running Vault instances: pkill -f \"vault server\""
-
-    echo -e "\nEnjoy your Vault!"
+                    log_info "\n=================================================="
+                    log_info "VAULT LAB RE-USE COMPLETED."
+                    log_info "=================================================="
+                    display_final_info
+                    exit 0 # Exit after successful re-use
+                    ;;
+            esac
+        fi
+    else
+        log_info "\nNo existing Vault lab data found. Proceeding with a fresh setup. ✨"
+    fi
 }
 
 
-# --- Main Script Flow ---
+# --- Function: Display final information ---
+# --- Function: Display final information ---
+display_final_info() {
+    log_info "\n=================================================="
+    log_info "LAB VAULT IS READY TO USE!"
+    log_info "=================================================="
+
+    # Corrected lines: Added -e to echo for color interpretation
+    echo -e "\n${YELLOW}MAIN ACCESS DETAILS:${NC}"
+    echo -e "URL: ${GREEN}$VAULT_ADDR${NC}" # <-- ADDED -e HERE
+    echo -e "Root Token: ${GREEN}root${NC} (also saved in $VAULT_DIR/root_token.txt)" # <-- ADDED -e HERE
+    echo -e "Example user: ${GREEN}devuser / devpass${NC} (with 'default' policy)" # <-- ADDED -e HERE
+
+    echo -e "\n${YELLOW}DETAILED ACCESS POINTS:${NC}"
+    echo -e "You can read the test secret from 'secret/test-secret' using:"
+    echo -e "  ${GREEN}$BIN_DIR/vault kv get secret/test-secret${NC}" # <-- ADDED -e HERE
+    echo -e "You can read the test secret from 'kv/test-secret' using:"
+    echo -e "  ${GREEN}$BIN_DIR/vault kv get kv/test-secret${NC}" # <-- ADDED -e HERE
+
+
+    echo -e "\n${YELLOW}APPROLE 'web-application' DETAILS:${NC}"
+    if [ -f "$VAULT_DIR/approle_role_id.txt" ]; then
+        echo -e "Role ID: ${GREEN}$(cat "$VAULT_DIR/approle_role_id.txt")${NC}" # <-- ADDED -e HERE
+    else
+        log_warn "AppRole Role ID file not found. AppRole may not be fully configured. ⚠️"
+    fi
+    if [ -f "$VAULT_DIR/approle_secret_id.txt" ]; then
+        echo -e "Secret ID: ${GREEN}$(cat "$VAULT_DIR/approle_secret_id.txt")${NC}" # <-- ADDED -e HERE
+    else
+        log_warn "AppRole Secret ID file not found. AppRole may not be fully configured. ⚠️"
+    fi
+
+    echo -e "\n${YELLOW}Current Vault status:${NC}"
+    "$BIN_DIR/vault" status # This command's output might be colored by Vault itself or not, depends on Vault's internal logic.
+
+    echo -e "\n${YELLOW}To access Vault UI/CLI, use:${NC}"
+    echo "export VAULT_ADDR=$VAULT_ADDR" # This line doesn't use color variables, so -e is optional but harmless.
+    echo "export VAULT_TOKEN=root"       # Same here.
+    echo "Or access the UI at the above address and use 'root' as the token."
+
+    echo -e "\n${YELLOW}To test AppRole authentication:${NC}"
+    echo "export VAULT_ADDR=$VAULT_ADDR"
+    echo "vault write auth/approle/login role_id=\"$(cat "$VAULT_DIR/approle_role_id.txt" 2>/dev/null)\" secret_id=\"$(cat "$VAULT_DIR/approle_secret_id.txt" 2>/dev/null)\""
+    echo "Note: The Secret ID is typically single-use for new creations. This command is for testing the login itself."
+
+    echo -e "\n${YELLOW}To stop the server:${NC}"
+    echo -e "  ${GREEN}kill $LAB_VAULT_PID${NC}" # <-- ADDED -e HERE
+    echo "Or to stop all running Vault instances:"
+    echo -e "  ${GREEN}pkill -f \"vault server\"${NC}" # <-- ADDED -e HERE
+    echo "  (Note: The 'kill' command using \$LAB_VAULT_PID is safer as it targets only this lab's Vault instance)."
+
+    log_info "\nEnjoy your Vault!" # This uses your custom function, so it's already correct.
+}
+
+
+# --- Main Script Execution Logic ---
 main() {
-    # Argument Parsing
+    # Parse command-line arguments
+    # This loop processes all arguments provided to the script.
+    # It supports -h/--help for help, -c/--clean for forced cleanup, and -v/--verbose for more output.
     local arg
     for arg in "$@"; do
         case $arg in
@@ -678,70 +758,51 @@ main() {
             -c|--clean)
                 FORCE_CLEANUP_ON_START=true
                 ;;
+            -v|--verbose)
+                VERBOSE_OUTPUT=true # Currently this flag is not fully integrated for conditional logging.
+                ;;
             *)
-                echo "Error: Unknown option '$arg'" >&2
-                display_help
+                log_error "Unknown option '$arg'. Use -h or --help for usage."
                 ;;
         esac
     done
 
-    # --- Step 0: Check and Install Prerequisites ---
+    # Step 1: Check and install necessary prerequisites (curl, jq, unzip, lsof).
+    # This ensures the script has all required tools before proceeding.
     check_and_install_prerequisites
 
-    # --- Step 1: Handle Existing Lab Environment ---
-    local existing_vault_dir_found=false
-    if [ -d "$VAULT_DIR" ] && [ "$(ls -A "$VAULT_DIR" 2>/dev/null)" ]; then
-        existing_vault_dir_found=true
-    fi
+    # Step 2: Handle existing lab environment.
+    # This function checks if a previous Vault lab setup exists and prompts the user
+    # to either clean it up or attempt to re-use it. If re-used, it intelligently
+    # re-applies configurations.
+    handle_existing_lab
 
-    if [ "$existing_vault_dir_found" = true ]; then
-        if [ "$FORCE_CLEANUP_ON_START" = true ]; then
-            echo -e "\nForce clean option activated. Cleaning up old Vault data..."
-            cleanup_previous_environment
-        else
-            echo -e "\nAn existing Vault lab environment was detected in '$VAULT_DIR'."
-            read -p "Do you want to clean it up and start from scratch? (y/N): " choice
-            case "$choice" in
-                y|Y )
-                    cleanup_previous_environment
-                    ;;
-                * )
-                    echo "Skipping full data cleanup. Attempting to re-use existing data."
-                    echo "Note: Re-using will ensure Vault is running, initialized, unsealed, and configurations reapplied."
+    # If we reach here, it means either:
+    # a) No existing lab was found.
+    # b) User chose to clean up an existing lab.
+    # So, we proceed with a fresh setup or a re-initialization.
 
-                    # Ensure bin directory exists and Vault binary is downloaded/updated
-                    mkdir -p "$BIN_DIR"
-                    download_latest_vault_binary "$BIN_DIR"
-
-                    # Ensure Vault is started
-                    configure_and_start_vault
-
-                    # Intelligently initialize/unseal based on current Vault status
-                    initialize_and_unseal_vault
-
-                    # Re-apply configurations idempotently
-                    configure_vault_features
-
-                    echo -e "\n=================================================="
-                    echo "VAULT LAB RE-USE COMPLETED."
-                    echo "=================================================="
-                    display_final_info
-                    exit 0 # Exit after successful re-use
-                    ;;
-            esac
-        fi
-    else
-        echo -e "\nNo existing Vault lab data found. Proceeding with a fresh setup. ✨"
-    fi
-
-    # --- Step 2: Core Setup Process (fresh setup or after forced cleanup) ---
-    mkdir -p "$BIN_DIR" # Ensure bin directory exists for download
+    # Step 3: Download or update the Vault binary.
+    # This ensures the latest stable non-enterprise version of Vault is available.
+    mkdir -p "$BIN_DIR" || log_error "Failed to create directory $BIN_DIR. Check permissions."
     download_latest_vault_binary "$BIN_DIR"
-    echo "=================================================="
+    log_info "=================================================="
 
+    # Step 4: Configure and start the Vault server.
+    # This creates the necessary configuration file and launches the Vault process.
     configure_and_start_vault
+
+    # Step 5: Initialize and unseal Vault.
+    # If Vault is not initialized, it performs initialization and unseals it.
+    # If already initialized, it attempts to unseal if sealed.
     initialize_and_unseal_vault
+
+    # Step 6: Configure common Vault features.
+    # This includes enabling KV secrets engines, PKI, Userpass auth, AppRole, and Audit Device.
     configure_vault_features
+
+    # Step 7: Display final access information to the user.
+    # Provides all details needed to interact with the deployed Vault lab.
     display_final_info
 }
 
