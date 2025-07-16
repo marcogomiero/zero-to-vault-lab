@@ -9,6 +9,10 @@
 # - Audit Device enabled.
 # - Automatically downloads the latest Vault version (excluding enterprise versions).
 # - Improved messaging for clarity on the download/update process.
+# - Checks and optionally installs prerequisites (curl, jq, unzip, lsof)
+#   based on OS, with user consent.
+# - Detects existing Vault lab environment and prompts user for cleanup or reuse,
+#   intelligently handling initialization and unsealing.
 
 # --- Global Configuration ---
 BASE_DIR="/mnt/c/Users/gomiero1/PycharmProjects/PythonProject/zero-to-vault-lab" # Your base directory
@@ -22,37 +26,183 @@ LAB_VAULT_PID="" # Global variable for Vault PID
 # AUDIT_LOG_PATH="$VAULT_DIR/vault_audit.log"
 AUDIT_LOG_PATH="/dev/null"
 
+# --- Global Flags ---
+FORCE_CLEANUP_ON_START=false
+
+# --- Function: Display Help Message ---
+display_help() {
+    echo "Usage: $0 [OPTIONS]"
+    echo ""
+    echo "This script deploys a HashiCorp Vault lab environment."
+    echo ""
+    echo "Options:"
+    echo "  -c, --clean    Forces a clean setup, removing any existing Vault data"
+    echo "                 in '$VAULT_DIR' before starting."
+    echo "  -h, --help     Display this help message and exit."
+    echo ""
+    echo "Default Behavior (no options):"
+    echo "  The script will detect an existing Vault lab in '$VAULT_DIR'."
+    echo "  If found, it will ask if you want to clean it up or re-use it."
+    echo ""
+    echo "Examples:"
+    echo "  $0"
+    echo "  $0 --clean"
+    echo "  $0 -c"
+    echo ""
+    exit 0 # Exit after displaying help
+}
+
+
+# --- Function: Check and Install Prerequisites ---
+check_and_install_prerequisites() {
+    echo "=================================================="
+    echo "CHECKING PREREQUISITES"
+    echo "=================================================="
+
+    local missing_pkgs=()
+    local install_cmd=""
+    local os_type=$(uname -s) # Get OS type (Linux, Darwin, MINGW64_NT, etc.)
+
+    # Define packages to check for
+    declare -A pkg_map
+    pkg_map["curl"]="curl"
+    pkg_map["jq"]="jq"
+    pkg_map["unzip"]="unzip"
+    pkg_map["lsof"]="lsof"
+
+    for cmd_name in "${!pkg_map[@]}"; do
+        if ! command -v "${pkg_map[$cmd_name]}" &> /dev/null; then
+            missing_pkgs+=("${pkg_map[$cmd_name]}")
+        fi
+    done
+
+    if [ ${#missing_pkgs[@]} -eq 0 ]; then
+        echo "All necessary prerequisites (curl, jq, unzip, lsof) are already installed. 👍"
+        return 0 # All good
+    fi
+
+    echo -e "\nWARNING: The following prerequisite packages are missing: ${missing_pkgs[*]}"
+
+    # Determine installation command based on OS
+    case "$os_type" in
+        Linux*)
+            if command -v apt-get &> /dev/null; then
+                install_cmd="sudo apt-get update && sudo apt-get install -y"
+            elif command -v yum &> /dev/null; then
+                install_cmd="sudo yum install -y"
+            elif command -v dnf &> /dev/null; then
+                install_cmd="sudo dnf install -y"
+            elif command -v pacman &> /dev/null; then
+                install_cmd="sudo pacman -Sy --noconfirm" # pacman needs --noconfirm for non-interactive
+            fi
+            ;;
+        Darwin*) # macOS
+            if command -v brew &> /dev/null; then
+                install_cmd="brew install"
+            else
+                echo "Homebrew is not installed. Please install Homebrew (https://brew.sh/) to proceed."
+                echo "Then run: brew install ${missing_pkgs[*]}"
+                read -p "Do you want to proceed without installing missing packages? (y/N): " choice
+                if [[ "$choice" =~ ^[Yy]$ ]]; then
+                    echo "Proceeding without installing missing packages. This may cause errors. 🚧"
+                    return 0
+                else
+                    echo "Exiting. Please install missing prerequisites manually. 👋"
+                    exit 1
+                fi
+            fi
+            ;;
+        MINGW64_NT*) # Git Bash on Windows
+            echo "Detected Git Bash on Windows. Please install missing packages manually using 'choco' or equivalent:"
+            echo "choco install ${missing_pkgs[*]}"
+            read -p "Do you want to proceed without installing missing packages? (y/N): " choice
+            if [[ "$choice" =~ ^[Yy]$ ]]; then
+                echo "Proceeding without installing missing packages. This may cause errors. 🚧"
+                return 0
+            else
+                echo "Exiting. Please install missing prerequisites manually. 👋"
+                exit 1
+            fi
+            ;;
+        *)
+            echo "Unsupported OS type: $os_type. Please install missing packages manually: ${missing_pkgs[*]} 🤷"
+            read -p "Do you want to proceed without installing missing packages? (y/N): " choice
+            if [[ "$choice" =~ ^[Yy]$ ]]; then
+                echo "Proceeding without installing missing packages. This may cause errors. 🚧"
+                return 0
+            else
+                echo "Exiting. Please install missing prerequisites manually. 👋"
+                exit 1
+            fi
+            ;;
+    esac
+
+    if [ -z "$install_cmd" ]; then
+        echo "Could not determine an automatic installation command for your system."
+        echo "Please install these packages manually: ${missing_pkgs[*]}"
+        read -p "Do you want to proceed without installing missing packages? (y/N): " choice
+        if [[ "$choice" =~ ^[Yy]$ ]]; then
+            echo "Proceeding without installing missing packages. This may cause errors. 🚧"
+            return 0
+        else
+            echo "Exiting. Please install missing prerequisites manually. 👋"
+            exit 1
+        fi
+    fi
+
+    echo -e "\nTo ensure proper functioning, this script needs to install the missing packages."
+    read -p "Do you want to install them now? (y/N): " choice
+
+    if [[ "$choice" =~ ^[Yy]$ ]]; then
+        echo "Installing missing packages: ${missing_pkgs[*]}..."
+        if eval "$install_cmd ${missing_pkgs[*]}"; then
+            echo "Prerequisites installed successfully! 🎉"
+            for cmd_name in "${!pkg_map[@]}"; do
+                if ! command -v "${pkg_map[$cmd_name]}" &> /dev/null; then
+                    echo "WARNING: ${pkg_map[$cmd_name]} still missing after installation attempt. This might cause issues. ⚠️"
+                fi
+            done
+        else
+            echo "ERROR: Failed to install prerequisites. Please install them manually and re-run the script. ❌"
+            exit 1
+        fi
+    else
+        echo "Installation skipped. This script may not function correctly without these packages. 🤷"
+        read -p "Do you still want to proceed? (y/N): " choice_proceed
+        if [[ "$choice_proceed" =~ ^[Yy]$ ]]; then
+            echo "Proceeding at your own risk. 🚧"
+        else
+            echo "Exiting. Please install missing prerequisites manually. 👋"
+            exit 1
+        fi
+    fi
+    echo "=================================================="
+}
+
+
 # --- Function: Download or update Vault binary ---
 download_latest_vault_binary() {
     local bin_dir="$1"
     local platform="linux_amd64"
+
+    local os_type=$(uname -s)
+    if [ "$os_type" == "Darwin" ]; then
+        platform="darwin_amd64"
+    elif [[ "$os_type" == *"MINGW"* ]]; then
+        platform="windows_amd64"
+    fi
+
     local vault_exe="$bin_dir/vault"
+    if [[ "$platform" == *"windows"* ]]; then
+        vault_exe="$bin_dir/vault.exe"
+    fi
+
     local temp_dir=$(mktemp -d)
     local success=1
 
     echo "=================================================="
     echo "VAULT BINARY MANAGEMENT: CHECK AND DOWNLOAD"
     echo "=================================================="
-
-    local missing_deps=false
-    if ! command -v jq &> /dev/null; then
-        echo "WARNING: 'jq' not found. Please install it (e.g., 'sudo apt install jq')."
-        missing_deps=true
-    fi
-    if ! command -v curl &> /dev/null; then
-        echo "WARNING: 'curl' not found. Please install it (e.g., 'sudo apt install curl')."
-        missing_deps=true
-    fi
-    if ! command -v unzip &> /dev/null; then
-        echo "WARNING: 'unzip' not found. Please install it (e.g., 'sudo apt install unzip')."
-        missing_deps=true
-    fi
-
-    if [ "$missing_deps" = true ]; then
-        echo "Cannot proceed with automatic download due to missing dependencies."
-        rm -rf "$temp_dir"
-        return 1
-    fi
 
     local vault_releases_json
     vault_releases_json=$(curl -s "https://releases.hashicorp.com/vault/index.json")
@@ -75,7 +225,7 @@ download_latest_vault_binary() {
         return 1
     fi
 
-    echo "Latest available version (including any release candidates): $latest_version"
+    echo "Latest available version (excluding Enterprise): $latest_version"
 
     if [ -f "$vault_exe" ]; then
         local current_version
@@ -100,14 +250,14 @@ download_latest_vault_binary() {
 
     echo "Downloading Vault v$latest_version for $platform from $download_url..."
     if ! curl -fsSL -o "$zip_file" "$download_url"; then
-        echo "Error: Failed to download Vault from $download_url."
+        echo "Error: Failed to download Vault from $download_url. Check internet connection or URL."
         rm -rf "$temp_dir"
         return 1
     fi
 
     echo "Extracting the binary..."
     if ! unzip -o "$zip_file" -d "$temp_dir" >/dev/null; then
-        echo "Error: Failed to extract the zip file."
+        echo "Error: Failed to extract the zip file. Ensure 'unzip' is installed and functional."
         rm -rf "$temp_dir"
         return 1
     fi
@@ -130,21 +280,21 @@ download_latest_vault_binary() {
 # --- Function: Wait for Vault to be UP and respond to APIs ---
 wait_for_vault_up() {
   local addr=$1
-  local timeout=30 # Maximum wait time in seconds
+  local timeout=30
   local elapsed=0
 
   echo "Waiting for Vault to listen on $addr..."
   while [[ $elapsed -lt $timeout ]]; do
     if curl -s -o /dev/null -w "%{http_code}" "$addr/v1/sys/seal-status" | grep -q "200"; then
-      echo "Vault is listening and responding to APIs after $elapsed seconds."
+      echo "Vault is listening and responding to APIs after $elapsed seconds. ✅"
       return 0
     fi
     sleep 1
     echo -n "."
     ((elapsed++))
   done
-  echo -e "\nVault did not become reachable after $timeout seconds. Check logs ($VAULT_DIR/vault.log)."
-  exit 1
+  echo -e "\nVault did not become reachable after $timeout seconds. Check logs ($VAULT_DIR/vault.log). ❌"
+  return 1 # Indicate failure
 }
 
 # --- Function: Clean up previous environment ---
@@ -154,8 +304,14 @@ cleanup_previous_environment() {
     echo "=================================================="
 
     echo "Stopping all Vault processes listening on port 8200..."
-    lsof -ti:8200 | xargs -r kill >/dev/null 2>&1
-    sleep 1
+    local vault_pid=$(lsof -ti:8200 2>/dev/null)
+    if [ -n "$vault_pid" ]; then
+        kill -9 "$vault_pid" >/dev/null 2>&1
+        echo "Killed Vault process (PID: $vault_pid)."
+        sleep 1 # Give it a moment to release the port
+    else
+        echo "No Vault process found on port 8200."
+    fi
 
     echo "Deleting previous working directories..."
     rm -rf "$VAULT_DIR"
@@ -164,43 +320,30 @@ cleanup_previous_environment() {
     mkdir -p "$VAULT_DIR"
 }
 
-# --- Function: Check for existing Vault instance and prompt user ---
-check_existing_vault_and_prompt() {
-    echo "=================================================="
-    echo "VAULT LAB ENVIRONMENT CHECK"
-    echo "=================================================="
-
-    if [ -d "$VAULT_DIR" ] && [ "$(ls -A "$VAULT_DIR")" ]; then
-        echo "A previous Vault lab environment was detected in '$VAULT_DIR'."
-        read -p "Do you want to perform a full cleanup and start from scratch? (y/N): " choice
-        case "$choice" in
-            y|Y )
-                cleanup_previous_environment
-                return 0 # Proceed with new setup
-                ;;
-            * )
-                echo "Skipping full cleanup. Attempting to start Vault from existing data (if valid)."
-                # Stop any running Vault instances to avoid port conflicts
-                echo "Stopping any running Vault processes on port 8200 to avoid conflicts..."
-                lsof -ti:8200 | xargs -r kill >/dev/null 2>&1
-                sleep 1
-                return 1 # Skip new setup, try to use existing
-                ;;
-        esac
-    else
-        echo "No previous Vault lab environment detected. Proceeding with a fresh setup."
-        # Ensure directories exist for a fresh start
-        mkdir -p "$VAULT_DIR"
-        return 0 # Proceed with new setup
-    fi
-}
-
-
 # --- Function: Configure and start Vault ---
 configure_and_start_vault() {
     echo -e "\n=================================================="
     echo "CONFIGURING LAB VAULT (SINGLE INSTANCE)"
     echo "=================================================="
+
+    # Ensure Vault is not already running on the port
+    if lsof -ti:"$(echo "$VAULT_ADDR" | cut -d':' -f3)" >/dev/null; then
+        echo "Vault process already running on port $(echo "$VAULT_ADDR" | cut -d':' -f3). Stopping it first."
+        local vault_pid=$(lsof -ti:"$(echo "$VAULT_ADDR" | cut -d':' -f3)" 2>/dev/null)
+        if [ -n "$vault_pid" ]; then
+            kill -9 "$vault_pid" >/dev/null 2>&1
+            sleep 2
+            if lsof -ti:"$(echo "$VAULT_ADDR" | cut -d':' -f3)" >/dev/null; then
+                echo "ERROR: Could not stop existing Vault process. Manual intervention required. 🛑"
+                exit 1
+            fi
+            echo "Existing Vault process stopped. ✅"
+        else
+            echo "No Vault process found to stop, but port is in use. May be another application. ⚠️"
+            echo "Please ensure port 8200 is free."
+            exit 1
+        fi
+    fi
 
     echo "Configuring Vault file..."
     cat > "$VAULT_DIR/config.hcl" <<EOF
@@ -219,12 +362,30 @@ ui = true
 EOF
 
     echo "Starting Vault server in background..."
-    "$BIN_DIR/vault" server -config="$VAULT_DIR/config.hcl" > "$VAULT_DIR/vault.log" 2>&1 &
+    local vault_exe="$BIN_DIR/vault"
+    if [[ "$(uname -s)" == *"MINGW"* ]]; then
+        vault_exe="$BIN_DIR/vault.exe"
+    fi
+
+    "$vault_exe" server -config="$VAULT_DIR/config.hcl" > "$VAULT_DIR/vault.log" 2>&1 &
     LAB_VAULT_PID=$!
     echo "Vault server PID: $LAB_VAULT_PID"
 
-    # New call to the wait function
-    wait_for_vault_up "$VAULT_ADDR"
+    if ! wait_for_vault_up "$VAULT_ADDR"; then
+        echo "ERROR: Vault server failed to start or respond. Check $VAULT_DIR/vault.log ❌"
+        exit 1
+    fi
+}
+
+# --- Function: Get Vault Status ---
+get_vault_status() {
+    local vault_exe="$BIN_DIR/vault"
+    if [[ "$(uname -s)" == *"MINGW"* ]]; then
+        vault_exe="$BIN_DIR/vault.exe"
+    fi
+    # Use -status to get current status, -format=json and jq for parsing
+    # Ensure VAULT_ADDR is set for the status command
+    VAULT_ADDR="$VAULT_ADDR" "$vault_exe" status -address="$VAULT_ADDR" -format=json 2>/dev/null
 }
 
 # --- Function: Wait for Vault to be UNSEALED and ready ---
@@ -234,50 +395,131 @@ wait_for_unseal_ready() {
   local elapsed=0
 
   echo "Waiting for Vault to be fully unsealed and operational for APIs..."
+
   while [[ $elapsed -lt $timeout ]]; do
-    status_output=$("$BIN_DIR/vault" status -address=$addr 2>/dev/null)
-    if echo "$status_output" | grep -q "Sealed.*false"; then
-      echo "Vault is unsealed and operational after $elapsed seconds."
+    local status_json=$(get_vault_status)
+    if echo "$status_json" | jq -e '.sealed == false' &>/dev/null; then
+      echo "Vault is unsealed and operational after $elapsed seconds. ✅"
       return 0
     fi
     sleep 1
     echo -n "."
     ((elapsed++))
   done
-  echo -e "\nVault did not become operational after $timeout seconds. Check logs."
-  exit 1
+  echo -e "\nVault did not become operational (still sealed) after $timeout seconds. Manual intervention may be required. ❌"
+  return 1 # Indicate failure
 }
 
 
 # --- Function: Initialize and unseal Vault ---
 initialize_and_unseal_vault() {
-    echo -e "\nInitializing Vault..."
-    export VAULT_ADDR="$VAULT_ADDR"
-    local INIT_OUTPUT
-    INIT_OUTPUT=$("$BIN_DIR/vault" operator init -key-shares=1 -key-threshold=1 -format=json)
+    echo -e "\n=================================================="
+    echo "INITIALIZING AND UNSEALING VAULT"
+    echo "=================================================="
 
-    local ROOT_TOKEN_VAULT
-    ROOT_TOKEN_VAULT=$(echo "$INIT_OUTPUT" | jq -r '.root_token')
-    local UNSEAL_KEY_VAULT
-    UNSEAL_KEY_VAULT=$(echo "$INIT_OUTPUT" | jq -r '.unseal_keys_b64[0]')
+    export VAULT_ADDR="$VAULT_ADDR" # Ensure VAULT_ADDR is set for vault commands
+    local vault_exe="$BIN_DIR/vault"
+    if [[ "$(uname -s)" == *"MINGW"* ]]; then
+        vault_exe="$BIN_DIR/vault.exe"
+    fi
 
-    echo "$ROOT_TOKEN_VAULT" > "$VAULT_DIR/root_token.txt"
-    echo "$UNSEAL_KEY_VAULT" > "$VAULT_DIR/unseal_key.txt"
+    local current_status_json=$(get_vault_status)
+    local is_initialized=$(echo "$current_status_json" | jq -r '.initialized')
+    local is_sealed=$(echo "$current_status_json" | jq -r '.sealed')
 
-    echo "Vault initialized."
+    if [ "$is_initialized" == "true" ]; then
+        echo "Vault is already initialized. Skipping initialization. ✅"
+    else
+        echo "Initializing Vault..."
+        local INIT_OUTPUT
+        INIT_OUTPUT=$("$vault_exe" operator init -key-shares=1 -key-threshold=1 -format=json)
+        if [ $? -ne 0 ]; then
+            echo "ERROR: Vault initialization failed. Please check $VAULT_DIR/vault.log for details. ❌"
+            exit 1
+        fi
 
-    echo "Performing Vault unseal with the generated key..."
-    "$BIN_DIR/vault" operator unseal "$UNSEAL_KEY_VAULT"
-    echo "Vault unsealed."
+        local ROOT_TOKEN_VAULT=$(echo "$INIT_OUTPUT" | jq -r '.root_token')
+        local UNSEAL_KEY_VAULT=$(echo "$INIT_OUTPUT" | jq -r '.unseal_keys_b64[0]')
 
-    wait_for_unseal_ready "$VAULT_ADDR"
+        echo "$ROOT_TOKEN_VAULT" > "$VAULT_DIR/root_token.txt"
+        echo "$UNSEAL_KEY_VAULT" > "$VAULT_DIR/unseal_key.txt"
+        echo "Vault initialized. Root Token and Unseal Key saved in $VAULT_DIR. 🔑"
 
-    echo "Setting root token to 'root' (lab only, not for production!)..."
-    export VAULT_TOKEN="$ROOT_TOKEN_VAULT"
-    "$BIN_DIR/vault" token create -id="root" -policy="root" -no-default-policy -display-name="laboratory-root" >/dev/null
+        # After initialization, Vault IS sealed. Update state variables.
+        current_status_json=$(get_vault_status) # Get updated status
+        is_sealed=$(echo "$current_status_json" | jq -r '.sealed')
+    fi
 
-    echo "root" > "$VAULT_DIR/root_token.txt"
-    export VAULT_TOKEN="root"
+    if [ "$is_sealed" == "true" ]; then
+        echo "Vault is sealed. Attempting to unseal..."
+        if [ -f "$VAULT_DIR/unseal_key.txt" ]; then
+            local UNSEAL_KEY_STORED=$(cat "$VAULT_DIR/unseal_key.txt")
+            if [ -z "$UNSEAL_KEY_STORED" ]; then
+                echo "ERROR: Unseal key file ($VAULT_DIR/unseal_key.txt) exists but is empty. Cannot unseal. ❌"
+                exit 1
+            fi
+            "$vault_exe" operator unseal "$UNSEAL_KEY_STORED" >/dev/null
+            if [ $? -ne 0 ]; then
+                echo "ERROR: Vault unseal failed with stored key. Manual unseal may be required. ❌"
+                exit 1
+            fi
+            echo "Vault unsealed successfully using stored key. ✅"
+        else
+            echo "WARNING: Vault is sealed but no unseal_key.txt found in $VAULT_DIR. Cannot unseal automatically. ⚠️"
+            echo "Please unseal Vault manually using 'vault operator unseal <KEY>'."
+            exit 1 # Exit if cannot auto-unseal for lab setup
+        fi
+    else
+        echo "Vault is already unsealed. Skipping unseal. ✅"
+    fi
+
+    if ! wait_for_unseal_ready "$VAULT_ADDR"; then
+        echo "ERROR: Vault did not reach unsealed state after initialization/unseal attempts. Exiting. ❌"
+        exit 1
+    fi
+
+    # Set the VAULT_TOKEN for subsequent operations
+    if [ -f "$VAULT_DIR/root_token.txt" ]; then
+        local initial_root_token=$(cat "$VAULT_DIR/root_token.txt")
+        if [ -n "$initial_root_token" ]; then
+            export VAULT_TOKEN="$initial_root_token"
+        else
+            echo "WARNING: $VAULT_DIR/root_token.txt is empty. Cannot set initial VAULT_TOKEN. ⚠️"
+        fi
+    else
+        echo "WARNING: $VAULT_DIR/root_token.txt not found. Cannot set initial VAULT_TOKEN. ⚠️"
+    fi
+
+    # Now, try to create or ensure the 'root' token with ID "root"
+    echo "Ensuring 'root' token with ID 'root' for lab use..."
+    # Check if a token with ID 'root' exists and is valid
+    # Use the current VAULT_TOKEN (the one generated or pre-existing) for this check/creation
+    if "$vault_exe" token lookup "root" &>/dev/null; then
+        echo "Root token 'root' already exists. ✅"
+        export VAULT_TOKEN="root" # Switch to the simpler "root" token if it exists
+    else
+        echo "Creating 'root' token with ID 'root'..."
+        # If the root_token.txt file exists and is not "root", use that for the creation command.
+        # Otherwise, rely on the VAULT_TOKEN exported above.
+        local token_for_create="$VAULT_TOKEN"
+        if [ -f "$VAULT_DIR/root_token.txt" ] && [ "$(cat "$VAULT_DIR/root_token.txt")" != "root" ]; then
+            token_for_create=$(cat "$VAULT_DIR/root_token.txt")
+        fi
+
+        # Temporarily use the full token to create the "root" token
+        local temp_vault_token="$VAULT_TOKEN"
+        export VAULT_TOKEN="$token_for_create"
+
+        "$vault_exe" token create -id="root" -policy="root" -no-default-policy -display-name="laboratory-root" >/dev/null
+        if [ $? -eq 0 ]; then
+            echo "Root token with ID 'root' created successfully. ✅"
+            echo "root" > "$VAULT_DIR/root_token.txt" # Overwrite for future use
+            export VAULT_TOKEN="root" # Set VAULT_TOKEN to the simple "root"
+        else
+            echo "WARNING: Failed to create 'root' token with ID 'root'. Falling back to initial generated token. ⚠️"
+            export VAULT_TOKEN="$temp_vault_token" # Revert to initial token
+        fi
+    fi
 }
 
 
@@ -285,8 +527,13 @@ initialize_and_unseal_vault() {
 configure_approle() {
     echo -e "\nEnabling and configuring AppRole Auth Method..."
 
+    local vault_exe="$BIN_DIR/vault"
+    if [[ "$(uname -s)" == *"MINGW"* ]]; then
+        vault_exe="$BIN_DIR/vault.exe"
+    fi
+
     echo " - Enabling Auth Method 'approle' at 'approle/'"
-    "$BIN_DIR/vault" auth enable approle
+    "$vault_exe" auth enable approle &>/dev/null # Suppress output if already enabled
 
     cat > "$VAULT_DIR/approle-policy.hcl" <<EOF
 path "secret/my-app/*" {
@@ -298,21 +545,21 @@ path "secret/other-data" {
 EOF
 
     echo " - Creating 'my-app-policy' policy for AppRole..."
-    "$BIN_DIR/vault" policy write my-app-policy "$VAULT_DIR/approle-policy.hcl"
+    "$vault_exe" policy write my-app-policy "$VAULT_DIR/approle-policy.hcl" &>/dev/null
 
     echo " - Creating AppRole 'web-application' role..."
-    "$BIN_DIR/vault" write auth/approle/role/web-application \
+    "$vault_exe" write auth/approle/role/web-application \
         token_policies="default,my-app-policy" \
         token_ttl="1h" \
-        token_max_ttl="24h"
+        token_max_ttl="24h" &>/dev/null
 
     local ROLE_ID
-    ROLE_ID=$("$BIN_DIR/vault" read -field=role_id auth/approle/role/web-application/role-id)
+    ROLE_ID=$("$vault_exe" read -field=role_id auth/approle/role/web-application/role-id)
     echo "   Role ID for 'web-application': $ROLE_ID (saved in $VAULT_DIR/approle_role_id.txt)"
     echo "$ROLE_ID" > "$VAULT_DIR/approle_role_id.txt"
 
     local SECRET_ID
-    SECRET_ID=$("$BIN_DIR/vault" write -f -field=secret_id auth/approle/role/web-application/secret-id)
+    SECRET_ID=$("$vault_exe" write -f -field=secret_id auth/approle/role/web-application/secret-id)
     echo "   Secret ID for 'web-application': $SECRET_ID (saved in $VAULT_DIR/approle_secret_id.txt)"
     echo "$SECRET_ID" > "$VAULT_DIR/approle_secret_id.txt"
 
@@ -323,10 +570,19 @@ EOF
 # --- Function: Configure Audit Device (uses global variable AUDIT_LOG_PATH) ---
 configure_audit_device() {
     echo -e "\nEnabling and configuring an Audit Device..."
-    echo " - Enabling file audit device at '$AUDIT_LOG_PATH'"
-    "$BIN_DIR/vault" audit enable file file_path="$AUDIT_LOG_PATH"
+    local vault_exe="$BIN_DIR/vault"
+    if [[ "$(uname -s)" == *"MINGW"* ]]; then
+        vault_exe="$BIN_DIR/vault.exe"
+    fi
 
-    echo "Audit Device configured. Logs will be written to $AUDIT_LOG_PATH"
+    echo " - Enabling file audit device at '$AUDIT_LOG_PATH'"
+    local audit_status=$("$vault_exe" audit list -format=json 2>/dev/null | jq -r '.["file/"]' 2>/dev/null)
+    if [ "$audit_status" == "null" ] || [ -z "$audit_status" ]; then
+        "$vault_exe" audit enable file file_path="$AUDIT_LOG_PATH" &>/dev/null
+        echo "Audit Device configured. Logs will be written to $AUDIT_LOG_PATH"
+    else
+        echo "Audit Device already enabled. Path: $AUDIT_LOG_PATH ✅"
+    fi
 }
 
 
@@ -334,31 +590,37 @@ configure_audit_device() {
 configure_vault_features() {
     echo -e "\nEnabling and configuring common features..."
 
+    local vault_exe="$BIN_DIR/vault"
+    if [[ "$(uname -s)" == *"MINGW"* ]]; then
+        vault_exe="$BIN_DIR/vault.exe"
+    fi
+
     echo " - Enabling KV v2 secrets engine at 'secret/'"
-    "$BIN_DIR/vault" secrets enable -path=secret kv-v2
+    "$vault_exe" secrets enable -path=secret kv-v2 &>/dev/null
 
     echo " - Enabling KV v2 secrets engine at 'kv/'"
-    "$BIN_DIR/vault" secrets enable -path=kv kv-v2
+    "$vault_exe" secrets enable -path=kv kv-v2 &>/dev/null
 
     echo " - Enabling PKI secrets engine at 'pki/'"
-    "$BIN_DIR/vault" secrets enable pki
-    "$BIN_DIR/vault" secrets tune -max-lease-ttl=87600h pki
+    "$vault_exe" secrets enable pki &>/dev/null
+    "$vault_exe" secrets tune -max-lease-ttl=87600h pki &>/dev/null
 
     echo " - Enabling 'userpass' Auth Method at 'userpass/'"
-    "$BIN_DIR/vault" auth enable userpass
+    "$vault_exe" auth enable userpass &>/dev/null
 
     echo " - Creating example user 'devuser' with password 'devpass'"
-    "$BIN_DIR/vault" write auth/userpass/users/devuser password=devpass policies=default
+    "$vault_exe" write auth/userpass/users/devuser password=devpass policies=default &>/dev/null || \
+      echo "User 'devuser' already exists or failed to create."
 
     configure_approle
     configure_audit_device
 
     echo -e "\n--- Populating test secrets ---"
     echo " - Writing test secret to secret/test-secret"
-    "$BIN_DIR/vault" kv put secret/test-secret message="Hello from Vault secret!" username="testuser"
+    "$vault_exe" kv put secret/test-secret message="Hello from Vault secret!" username="testuser" &>/dev/null
 
     echo " - Writing test secret to kv/test-secret"
-    "$BIN_DIR/vault" kv put kv/test-secret message="Hello from Vault kv!" database="testdb"
+    "$vault_exe" kv put kv/test-secret message="Hello from Vault kv!" database="testdb" &>/dev/null
 }
 
 
@@ -406,88 +668,82 @@ display_final_info() {
 
 # --- Main Script Flow ---
 main() {
-    # Flag to determine if we need to do a full setup
-    local PERFORM_FULL_SETUP=0
+    # Argument Parsing
+    local arg
+    for arg in "$@"; do
+        case $arg in
+            -h|--help)
+                display_help
+                ;;
+            -c|--clean)
+                FORCE_CLEANUP_ON_START=true
+                ;;
+            *)
+                echo "Error: Unknown option '$arg'" >&2
+                display_help
+                ;;
+        esac
+    done
 
-    # Check for existing Vault and prompt user
-    check_existing_vault_and_prompt
-    local cleanup_status=$? # Capture return value (0 for full setup, 1 for skipping)
+    # --- Step 0: Check and Install Prerequisites ---
+    check_and_install_prerequisites
 
-    if [ $cleanup_status -eq 0 ]; then
-        PERFORM_FULL_SETUP=1
+    # --- Step 1: Handle Existing Lab Environment ---
+    local existing_vault_dir_found=false
+    if [ -d "$VAULT_DIR" ] && [ "$(ls -A "$VAULT_DIR" 2>/dev/null)" ]; then
+        existing_vault_dir_found=true
+    fi
+
+    if [ "$existing_vault_dir_found" = true ]; then
+        if [ "$FORCE_CLEANUP_ON_START" = true ]; then
+            echo -e "\nForce clean option activated. Cleaning up old Vault data..."
+            cleanup_previous_environment
+        else
+            echo -e "\nAn existing Vault lab environment was detected in '$VAULT_DIR'."
+            read -p "Do you want to clean it up and start from scratch? (y/N): " choice
+            case "$choice" in
+                y|Y )
+                    cleanup_previous_environment
+                    ;;
+                * )
+                    echo "Skipping full data cleanup. Attempting to re-use existing data."
+                    echo "Note: Re-using will ensure Vault is running, initialized, unsealed, and configurations reapplied."
+
+                    # Ensure bin directory exists and Vault binary is downloaded/updated
+                    mkdir -p "$BIN_DIR"
+                    download_latest_vault_binary "$BIN_DIR"
+
+                    # Ensure Vault is started
+                    configure_and_start_vault
+
+                    # Intelligently initialize/unseal based on current Vault status
+                    initialize_and_unseal_vault
+
+                    # Re-apply configurations idempotently
+                    configure_vault_features
+
+                    echo -e "\n=================================================="
+                    echo "VAULT LAB RE-USE COMPLETED."
+                    echo "=================================================="
+                    display_final_info
+                    exit 0 # Exit after successful re-use
+                    ;;
+            esac
+        fi
     else
-        # If cleanup was skipped, check if Vault is already unsealed and configure it
-        echo -e "\nAttempting to use existing Vault configuration..."
-        export VAULT_ADDR="$VAULT_ADDR"
-        if [ -f "$VAULT_DIR/root_token.txt" ]; then
-            export VAULT_TOKEN=$(cat "$VAULT_DIR/root_token.txt")
-        fi
-
-        # Try to start Vault if not already running
-        if ! curl -s -o /dev/null -w "%{http_code}" "$VAULT_ADDR/v1/sys/seal-status" | grep -q "200"; then
-            echo "Vault is not running or not reachable. Starting it..."
-            configure_and_start_vault
-        else
-            echo "Vault is already running and reachable."
-        fi
-
-        # Check if Vault is sealed and try to unseal it if key is available
-        if "$BIN_DIR/vault" status -address=$VAULT_ADDR 2>/dev/null | grep -q "Sealed.*true"; then
-            echo "Vault is sealed. Attempting to unseal with existing key (if available)..."
-            if [ -f "$VAULT_DIR/unseal_key.txt" ]; then
-                local EXISTING_UNSEAL_KEY=$(cat "$VAULT_DIR/unseal_key.txt")
-                echo "Found unseal key. Attempting unseal..."
-                "$BIN_DIR/vault" operator unseal "$EXISTING_UNSEAL_KEY"
-                wait_for_unseal_ready "$VAULT_ADDR"
-                echo "Vault unsealed successfully using existing key."
-            else
-                echo "No unseal key found in '$VAULT_DIR/unseal_key.txt'. Cannot unseal automatically."
-                echo "Please unseal Vault manually or run the script with cleanup option."
-                exit 1
-            fi
-        else
-            echo "Vault is already unsealed."
-        fi
-
-        # Verify root token and set if necessary
-        if [ ! -f "$VAULT_DIR/root_token.txt" ] || [ "$(cat "$VAULT_DIR/root_token.txt")" != "root" ]; then
-             echo "Root token file missing or not set to 'root'. This script sets the root token to 'root' for lab convenience."
-             echo "If you want to use the previous token, please set VAULT_TOKEN manually."
-             echo "To reconfigure services (like AppRole, secrets engines, etc.), run the script with cleanup option."
-        else
-            echo "Root token 'root' is configured."
-        fi
-
-        # Skip feature configuration as we assume an existing setup might have them
-        # If the user skips cleanup, they're implicitly accepting the current state.
-        # If a full reconfiguration is desired, they should choose 'y' for cleanup.
-        echo "Skipping full feature configuration as cleanup was skipped. Existing configurations will be used."
-        display_final_info
-        return 0 # Exit after attempting to start existing Vault
+        echo -e "\nNo existing Vault lab data found. Proceeding with a fresh setup. ✨"
     fi
 
-    # Only proceed with full setup if PERFORM_FULL_SETUP is 1
-    if [ $PERFORM_FULL_SETUP -eq 1 ]; then
-        mkdir -p "$BIN_DIR"
-        if download_latest_vault_binary "$BIN_DIR" "linux_amd64"; then
-            echo "Vault binary is ready for use."
-        else
-            echo "Automatic Vault binary management did not fully succeed."
-            if [ -f "$BIN_DIR/vault" ]; then
-                echo "Existing Vault binary in $BIN_DIR/vault will be used."
-            else
-                echo "FATAL ERROR: No Vault binary available. Manually download the desired binary and place it in $BIN_DIR/vault."
-                exit 1
-            fi
-        fi
-        echo "=================================================="
+    # --- Step 2: Core Setup Process (fresh setup or after forced cleanup) ---
+    mkdir -p "$BIN_DIR" # Ensure bin directory exists for download
+    download_latest_vault_binary "$BIN_DIR"
+    echo "=================================================="
 
-        configure_and_start_vault
-        initialize_and_unseal_vault
-        configure_vault_features
-        display_final_info
-    fi
+    configure_and_start_vault
+    initialize_and_unseal_vault
+    configure_vault_features
+    display_final_info
 }
 
 # Execute the main function
-main
+main "$@"
