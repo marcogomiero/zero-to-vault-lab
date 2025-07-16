@@ -20,7 +20,7 @@ This script significantly reduces the overhead of setting up a Vault instance, m
 🛠️ How to Use
 Clone the repository:
 Make the script executable:
-Run the script:
+Run the script: ./setup-òab-vault.sh
 
 The script will print all necessary information to access Vault (URL, Root Token, AppRole credentials) upon completion.
 

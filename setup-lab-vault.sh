@@ -164,6 +164,38 @@ cleanup_previous_environment() {
     mkdir -p "$VAULT_DIR"
 }
 
+# --- Function: Check for existing Vault instance and prompt user ---
+check_existing_vault_and_prompt() {
+    echo "=================================================="
+    echo "VAULT LAB ENVIRONMENT CHECK"
+    echo "=================================================="
+
+    if [ -d "$VAULT_DIR" ] && [ "$(ls -A "$VAULT_DIR")" ]; then
+        echo "A previous Vault lab environment was detected in '$VAULT_DIR'."
+        read -p "Do you want to perform a full cleanup and start from scratch? (y/N): " choice
+        case "$choice" in
+            y|Y )
+                cleanup_previous_environment
+                return 0 # Proceed with new setup
+                ;;
+            * )
+                echo "Skipping full cleanup. Attempting to start Vault from existing data (if valid)."
+                # Stop any running Vault instances to avoid port conflicts
+                echo "Stopping any running Vault processes on port 8200 to avoid conflicts..."
+                lsof -ti:8200 | xargs -r kill >/dev/null 2>&1
+                sleep 1
+                return 1 # Skip new setup, try to use existing
+                ;;
+        esac
+    else
+        echo "No previous Vault lab environment detected. Proceeding with a fresh setup."
+        # Ensure directories exist for a fresh start
+        mkdir -p "$VAULT_DIR"
+        return 0 # Proceed with new setup
+    fi
+}
+
+
 # --- Function: Configure and start Vault ---
 configure_and_start_vault() {
     echo -e "\n=================================================="
@@ -374,26 +406,87 @@ display_final_info() {
 
 # --- Main Script Flow ---
 main() {
-    cleanup_previous_environment
+    # Flag to determine if we need to do a full setup
+    local PERFORM_FULL_SETUP=0
 
-    mkdir -p "$BIN_DIR"
-    if download_latest_vault_binary "$BIN_DIR" "linux_amd64"; then
-        echo "Vault binary is ready for use."
+    # Check for existing Vault and prompt user
+    check_existing_vault_and_prompt
+    local cleanup_status=$? # Capture return value (0 for full setup, 1 for skipping)
+
+    if [ $cleanup_status -eq 0 ]; then
+        PERFORM_FULL_SETUP=1
     else
-        echo "Automatic Vault binary management did not fully succeed."
-        if [ -f "$BIN_DIR/vault" ]; then
-            echo "Existing Vault binary in $BIN_DIR/vault will be used."
-        else
-            echo "FATAL ERROR: No Vault binary available. Manually download the desired binary and place it in $BIN_DIR/vault."
-            exit 1
+        # If cleanup was skipped, check if Vault is already unsealed and configure it
+        echo -e "\nAttempting to use existing Vault configuration..."
+        export VAULT_ADDR="$VAULT_ADDR"
+        if [ -f "$VAULT_DIR/root_token.txt" ]; then
+            export VAULT_TOKEN=$(cat "$VAULT_DIR/root_token.txt")
         fi
-    fi
-    echo "=================================================="
 
-    configure_and_start_vault
-    initialize_and_unseal_vault
-    configure_vault_features
-    display_final_info
+        # Try to start Vault if not already running
+        if ! curl -s -o /dev/null -w "%{http_code}" "$VAULT_ADDR/v1/sys/seal-status" | grep -q "200"; then
+            echo "Vault is not running or not reachable. Starting it..."
+            configure_and_start_vault
+        else
+            echo "Vault is already running and reachable."
+        fi
+
+        # Check if Vault is sealed and try to unseal it if key is available
+        if "$BIN_DIR/vault" status -address=$VAULT_ADDR 2>/dev/null | grep -q "Sealed.*true"; then
+            echo "Vault is sealed. Attempting to unseal with existing key (if available)..."
+            if [ -f "$VAULT_DIR/unseal_key.txt" ]; then
+                local EXISTING_UNSEAL_KEY=$(cat "$VAULT_DIR/unseal_key.txt")
+                echo "Found unseal key. Attempting unseal..."
+                "$BIN_DIR/vault" operator unseal "$EXISTING_UNSEAL_KEY"
+                wait_for_unseal_ready "$VAULT_ADDR"
+                echo "Vault unsealed successfully using existing key."
+            else
+                echo "No unseal key found in '$VAULT_DIR/unseal_key.txt'. Cannot unseal automatically."
+                echo "Please unseal Vault manually or run the script with cleanup option."
+                exit 1
+            fi
+        else
+            echo "Vault is already unsealed."
+        fi
+
+        # Verify root token and set if necessary
+        if [ ! -f "$VAULT_DIR/root_token.txt" ] || [ "$(cat "$VAULT_DIR/root_token.txt")" != "root" ]; then
+             echo "Root token file missing or not set to 'root'. This script sets the root token to 'root' for lab convenience."
+             echo "If you want to use the previous token, please set VAULT_TOKEN manually."
+             echo "To reconfigure services (like AppRole, secrets engines, etc.), run the script with cleanup option."
+        else
+            echo "Root token 'root' is configured."
+        fi
+
+        # Skip feature configuration as we assume an existing setup might have them
+        # If the user skips cleanup, they're implicitly accepting the current state.
+        # If a full reconfiguration is desired, they should choose 'y' for cleanup.
+        echo "Skipping full feature configuration as cleanup was skipped. Existing configurations will be used."
+        display_final_info
+        return 0 # Exit after attempting to start existing Vault
+    fi
+
+    # Only proceed with full setup if PERFORM_FULL_SETUP is 1
+    if [ $PERFORM_FULL_SETUP -eq 1 ]; then
+        mkdir -p "$BIN_DIR"
+        if download_latest_vault_binary "$BIN_DIR" "linux_amd64"; then
+            echo "Vault binary is ready for use."
+        else
+            echo "Automatic Vault binary management did not fully succeed."
+            if [ -f "$BIN_DIR/vault" ]; then
+                echo "Existing Vault binary in $BIN_DIR/vault will be used."
+            else
+                echo "FATAL ERROR: No Vault binary available. Manually download the desired binary and place it in $BIN_DIR/vault."
+                exit 1
+            fi
+        fi
+        echo "=================================================="
+
+        configure_and_start_vault
+        initialize_and_unseal_vault
+        configure_vault_features
+        display_final_info
+    fi
 }
 
 # Execute the main function
