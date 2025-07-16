@@ -5,7 +5,7 @@ BASE_DIR="/mnt/c/Users/gomiero1/PycharmProjects/PythonProject/zero-to-vault-lab"
 BIN_DIR="$BASE_DIR/bin" # Directory where Vault binary will be stored
 VAULT_DIR="$BASE_DIR/vault-lab" # Working directory for Vault data, config, and keys
 VAULT_ADDR="http://127.0.0.1:8200" # Default Vault address for the lab environment
-LAB_VAULT_PID="" # Global variable to store the PID of the running Vault server
+LAB_VAULT_PID_FILE="$VAULT_DIR/vault.pid" # File to store the PID of the running Vault server
 
 # Path for the Audit Log (default for the lab is /dev/null for simplicity)
 # To enable auditing to a real file, change this variable. Example:
@@ -15,8 +15,9 @@ AUDIT_LOG_PATH="/dev/null"
 # --- Global Flags ---
 FORCE_CLEANUP_ON_START=false # Flag to force a clean setup, removing existing data
 VERBOSE_OUTPUT=false # Flag to enable more detailed output for debugging
+COLORS_ENABLED=true # Flag to control colored output. Default to true.
 
-# --- Colors for better output ---
+# --- Colors for better output (initial setup) ---
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 RED='\033[0;31m'
@@ -50,6 +51,7 @@ display_help() {
     echo "                 in '$VAULT_DIR' before starting."
     echo "  -h, --help     Display this help message and exit."
     echo "  -v, --verbose  Enable verbose output for troubleshooting (currently not fully implemented)."
+    echo "  --no-color     Disable colored output, useful for logging or non-interactive environments."
     echo ""
     echo "Default Behavior (no options):"
     echo "  The script will detect an existing Vault lab in '$VAULT_DIR'."
@@ -59,6 +61,7 @@ display_help() {
     echo "  $0"
     echo "  $0 --clean"
     echo "  $0 -v"
+    echo "  $0 --no-color"
     echo ""
     exit 0 # Exit after displaying help
 }
@@ -166,6 +169,48 @@ check_and_install_prerequisites() {
         fi
     fi
     log_info "=================================================="
+}
+
+# --- Function: Stop Vault process by PID file ---
+stop_vault() {
+    log_info "Attempting to stop Vault server..."
+    if [ -f "$LAB_VAULT_PID_FILE" ]; then
+        local pid=$(cat "$LAB_VAULT_PID_FILE")
+        if ps -p "$pid" > /dev/null; then
+            log_info "Found running Vault process with PID $pid. Attempting graceful shutdown..."
+            kill "$pid" >/dev/null 2>&1
+            sleep 5 # Give it some time to shut down
+            if ps -p "$pid" > /dev/null; then
+                log_warn "Vault process (PID: $pid) did not shut down gracefully. Forcing kill..."
+                kill -9 "$pid" >/dev/null 2>&1
+                sleep 1 # Give it a moment to release the port
+            fi
+            if ! ps -p "$pid" > /dev/null; then
+                log_info "Vault process (PID: $pid) stopped. ✅"
+                rm -f "$LAB_VAULT_PID_FILE"
+            else
+                log_error "Vault process (PID: $pid) could not be stopped. Manual intervention may be required. 🛑"
+            fi
+        else
+            log_info "No active Vault process found with PID $pid (from $LAB_VAULT_PID_FILE)."
+            rm -f "$LAB_VAULT_PID_FILE" # Clean up stale PID file
+        fi
+    else
+        log_info "No Vault PID file found ($LAB_VAULT_PID_FILE)."
+    fi
+    # Also check if anything else is on 8200
+    local vault_port=$(echo "$VAULT_ADDR" | cut -d':' -f3)
+    local lingering_pid=$(lsof -ti:"$vault_port" 2>/dev/null)
+    if [ -n "$lingering_pid" ]; then
+        log_warn "Found lingering process(es) on Vault port $vault_port (PIDs: $lingering_pid). Attempting to kill."
+        kill -9 "$lingering_pid" >/dev/null 2>&1
+        sleep 1
+        if lsof -ti:"$vault_port" >/dev/null; then
+             log_error "Could not clear port $vault_port. Manual intervention required. 🛑"
+        else
+            log_info "Lingering processes on port $vault_port cleared. ✅"
+        fi
+    fi
 }
 
 
@@ -295,26 +340,8 @@ cleanup_previous_environment() {
     log_info "FULL CLEANUP OF PREVIOUS LAB ENVIRONMENT"
     log_info "=================================================="
 
-    log_info "Stopping all Vault processes listening on port 8200..."
-    local vault_pid=$(lsof -ti:8200 2>/dev/null)
-    if [ -n "$vault_pid" ]; then
-        # Attempt graceful shutdown first
-        log_info "Attempting graceful shutdown of Vault process (PID: $vault_pid)..."
-        kill "$vault_pid" >/dev/null 2>&1
-        sleep 5 # Give it a few seconds to shut down gracefully
-        if lsof -ti:8200 &>/dev/null; then # Check if process is still running
-            log_warn "Vault process (PID: $vault_pid) did not shut down gracefully. Forcing kill..."
-            kill -9 "$vault_pid" >/dev/null 2>&1
-            sleep 1 # Give it a moment to release the port
-        fi
-        if ! lsof -ti:8200 &>/dev/null; then
-            log_info "Vault process (PID: $vault_pid) stopped. ✅"
-        else
-            log_error "Vault process (PID: $vault_pid) could not be stopped. Manual intervention may be required. 🛑"
-        fi
-    else
-        log_info "No Vault process found on port 8200."
-    fi
+    # Use the new stop_vault function for a more robust shutdown
+    stop_vault
 
     log_info "Deleting previous working directories: $VAULT_DIR..."
     rm -rf "$VAULT_DIR"
@@ -338,22 +365,8 @@ configure_and_start_vault() {
 
     local vault_port=$(echo "$VAULT_ADDR" | cut -d':' -f3)
 
-    # Ensure Vault is not already running on the port
-    if lsof -ti:"$vault_port" >/dev/null; then
-        log_warn "Vault process already running on port $vault_port. Stopping it first."
-        local vault_pid_to_stop=$(lsof -ti:"$vault_port" 2>/dev/null)
-        if [ -n "$vault_pid_to_stop" ]; then
-            kill -9 "$vault_pid_to_stop" >/dev/null 2>&1
-            sleep 2
-            if lsof -ti:"$vault_port" >/dev/null; then
-                log_error "Could not stop existing Vault process (PID: $vault_pid_to_stop). Manual intervention required. 🛑"
-            fi
-            log_info "Existing Vault process stopped. ✅"
-        else
-            log_warn "No Vault process found to stop, but port $vault_port is in use. May be another application. ⚠️"
-            log_error "Please ensure port $vault_port is free."
-        fi
-    fi
+    # Ensure Vault is not already running on the port by stopping it explicitly
+    stop_vault # Call the new stop function here before starting
 
     log_info "Configuring Vault HCL file: $VAULT_DIR/config.hcl"
     cat > "$VAULT_DIR/config.hcl" <<EOF
@@ -377,10 +390,14 @@ EOF
         vault_exe="$BIN_DIR/vault.exe"
     fi
 
+    # Ensure the vault.log file is ready
+    touch "$VAULT_DIR/vault.log"
+    chmod 644 "$VAULT_DIR/vault.log" # Ensure it's readable
+
     # Start Vault server, redirecting output to a log file
     "$vault_exe" server -config="$VAULT_DIR/config.hcl" > "$VAULT_DIR/vault.log" 2>&1 &
-    LAB_VAULT_PID=$! # Store the PID of the background process
-    log_info "Vault server PID: $LAB_VAULT_PID"
+    echo $! > "$LAB_VAULT_PID_FILE" # Store the PID of the background process in a file
+    log_info "Vault server started. PID saved to $LAB_VAULT_PID_FILE"
 
     # Wait for Vault to come up and be reachable
     if ! wait_for_vault_up "$VAULT_ADDR"; then
@@ -690,7 +707,6 @@ handle_existing_lab() {
 
 
 # --- Function: Display final information ---
-# --- Function: Display final information ---
 display_final_info() {
     log_info "\n=================================================="
     log_info "LAB VAULT IS READY TO USE!"
@@ -698,25 +714,25 @@ display_final_info() {
 
     # Corrected lines: Added -e to echo for color interpretation
     echo -e "\n${YELLOW}MAIN ACCESS DETAILS:${NC}"
-    echo -e "URL: ${GREEN}$VAULT_ADDR${NC}" # <-- ADDED -e HERE
-    echo -e "Root Token: ${GREEN}root${NC} (also saved in $VAULT_DIR/root_token.txt)" # <-- ADDED -e HERE
-    echo -e "Example user: ${GREEN}devuser / devpass${NC} (with 'default' policy)" # <-- ADDED -e HERE
+    echo -e "URL: ${GREEN}$VAULT_ADDR${NC}"
+    echo -e "Root Token: ${GREEN}root${NC} (also saved in $VAULT_DIR/root_token.txt)"
+    echo -e "Example user: ${GREEN}devuser / devpass${NC} (with 'default' policy)"
 
     echo -e "\n${YELLOW}DETAILED ACCESS POINTS:${NC}"
     echo -e "You can read the test secret from 'secret/test-secret' using:"
-    echo -e "  ${GREEN}$BIN_DIR/vault kv get secret/test-secret${NC}" # <-- ADDED -e HERE
+    echo -e "  ${GREEN}$BIN_DIR/vault kv get secret/test-secret${NC}"
     echo -e "You can read the test secret from 'kv/test-secret' using:"
-    echo -e "  ${GREEN}$BIN_DIR/vault kv get kv/test-secret${NC}" # <-- ADDED -e HERE
+    echo -e "  ${GREEN}$BIN_DIR/vault kv get kv/test-secret${NC}"
 
 
     echo -e "\n${YELLOW}APPROLE 'web-application' DETAILS:${NC}"
     if [ -f "$VAULT_DIR/approle_role_id.txt" ]; then
-        echo -e "Role ID: ${GREEN}$(cat "$VAULT_DIR/approle_role_id.txt")${NC}" # <-- ADDED -e HERE
+        echo -e "Role ID: ${GREEN}$(cat "$VAULT_DIR/approle_role_id.txt")${NC}"
     else
         log_warn "AppRole Role ID file not found. AppRole may not be fully configured. ⚠️"
     fi
     if [ -f "$VAULT_DIR/approle_secret_id.txt" ]; then
-        echo -e "Secret ID: ${GREEN}$(cat "$VAULT_DIR/approle_secret_id.txt")${NC}" # <-- ADDED -e HERE
+        echo -e "Secret ID: ${GREEN}$(cat "$VAULT_DIR/approle_secret_id.txt")${NC}"
     else
         log_warn "AppRole Secret ID file not found. AppRole may not be fully configured. ⚠️"
     fi
@@ -725,8 +741,8 @@ display_final_info() {
     "$BIN_DIR/vault" status # This command's output might be colored by Vault itself or not, depends on Vault's internal logic.
 
     echo -e "\n${YELLOW}To access Vault UI/CLI, use:${NC}"
-    echo "export VAULT_ADDR=$VAULT_ADDR" # This line doesn't use color variables, so -e is optional but harmless.
-    echo "export VAULT_TOKEN=root"       # Same here.
+    echo "export VAULT_ADDR=$VAULT_ADDR"
+    echo "export VAULT_TOKEN=root"
     echo "Or access the UI at the above address and use 'root' as the token."
 
     echo -e "\n${YELLOW}To test AppRole authentication:${NC}"
@@ -735,20 +751,39 @@ display_final_info() {
     echo "Note: The Secret ID is typically single-use for new creations. This command is for testing the login itself."
 
     echo -e "\n${YELLOW}To stop the server:${NC}"
-    echo -e "  ${GREEN}kill $LAB_VAULT_PID${NC}" # <-- ADDED -e HERE
-    echo "Or to stop all running Vault instances:"
-    echo -e "  ${GREEN}pkill -f \"vault server\"${NC}" # <-- ADDED -e HERE
-    echo "  (Note: The 'kill' command using \$LAB_VAULT_PID is safer as it targets only this lab's Vault instance)."
+    # Use the PID from the file for specific shutdown instruction
+    local current_lab_vault_pid=""
+    if [ -f "$LAB_VAULT_PID_FILE" ]; then
+        current_lab_vault_pid=$(cat "$LAB_VAULT_PID_FILE")
+    fi
 
-    log_info "\nEnjoy your Vault!" # This uses your custom function, so it's already correct.
+    if [ -n "$current_lab_vault_pid" ]; then
+        echo -e "  ${GREEN}kill $current_lab_vault_pid${NC} (uses PID from $LAB_VAULT_PID_FILE)"
+    else
+        echo -e "  Could not find Vault PID in $LAB_VAULT_PID_FILE. To stop Vault, find its PID (e.g., ${GREEN}lsof -ti:8200${NC}) and then ${GREEN}kill <PID>${NC}."
+    fi
+    echo "Or to stop all running Vault instances (less specific, use with caution):"
+    echo -e "  ${GREEN}pkill -f \"vault server\"${NC}"
+    echo "  (Note: Killing by PID from the .pid file is safer as it targets only this lab's Vault instance)."
+    echo -e "  Alternatively, run: ${GREEN}$0 stop${NC} (if you implement a 'stop' command option)" # Suggest a future feature
+
+    log_info "\nEnjoy your Vault!"
+    log_info "Logs are available at: $VAULT_DIR/vault.log" # Emphasize log location
 }
 
 
 # --- Main Script Execution Logic ---
 main() {
+    # Determine if colors should be enabled by default (if stdout is a TTY)
+    # This must happen before processing args, so --no-color can override it.
+    if [ ! -t 1 ]; then # If stdout is NOT a TTY (e.g., redirected to a file or pipe)
+        COLORS_ENABLED=false
+    fi
+
     # Parse command-line arguments
     # This loop processes all arguments provided to the script.
-    # It supports -h/--help for help, -c/--clean for forced cleanup, and -v/--verbose for more output.
+    # It supports -h/--help for help, -c/--clean for forced cleanup, -v/--verbose for more output,
+    # and --no-color to explicitly disable colors.
     local arg
     for arg in "$@"; do
         case $arg in
@@ -761,11 +796,24 @@ main() {
             -v|--verbose)
                 VERBOSE_OUTPUT=true # Currently this flag is not fully integrated for conditional logging.
                 ;;
+            --no-color) # Handle new --no-color flag
+                COLORS_ENABLED=false # User explicitly requests no colors
+                ;;
             *)
                 log_error "Unknown option '$arg'. Use -h or --help for usage."
                 ;;
         esac
     done
+
+    # Apply color disabling *after* parsing options and TTY check
+    # This ensures that if COLORS_ENABLED is false (either by TTY check or --no-color),
+    # the color variables are set to empty.
+    if [ "$COLORS_ENABLED" = false ]; then
+        GREEN=''
+        YELLOW=''
+        RED=''
+        NC=''
+    fi
 
     # Step 1: Check and install necessary prerequisites (curl, jq, unzip, lsof).
     # This ensures the script has all required tools before proceeding.
