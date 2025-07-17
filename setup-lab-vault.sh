@@ -636,16 +636,45 @@ configure_vault_features() {
     "$vault_exe" secrets enable pki &>/dev/null
     "$vault_exe" secrets tune -max-lease-ttl=87600h pki &>/dev/null # Set a long TTL for PKI certs
 
-    log_info " - Enabling 'userpass' Auth Method at 'userpass/'"
-    "$vault_exe" auth enable userpass &>/dev/null
+    # Rimuovi la riga successiva, poiché la gestione di userpass sarà centralizzata sotto.
+    # log_info " - Enabling 'userpass' Auth Method at 'userpass/'"
+    # "$vault_exe" auth enable userpass &>/dev/null
+
+    # Define a policy for development users (allowing read/list on test secrets)
+    log_info "Creating 'dev-policy' for test users..."
+    DEV_POLICY_PATH="$VAULT_DIR/dev-policy.hcl" # Store policy content in a temporary file
+    cat > "$DEV_POLICY_PATH" <<EOF
+path "secret/data/test-secret" {
+  capabilities = ["read", "list"]
+}
+path "kv/data/test-secret" {
+  capabilities = ["read", "list"]
+}
+# Allow listing secrets at the root of KV v2 mounts for better navigation
+path "secret/metadata/*" {
+  capabilities = ["list"]
+}
+path "kv/metadata/*" {
+  capabilities = ["list"]
+}
+EOF
+    "$vault_exe" policy write dev-policy "$DEV_POLICY_PATH" || log_error "Failed to write dev-policy."
+
+    log_info "Enabling and configuring Userpass authentication..."
+    # Aggiungi il controllo qui per abilitare userpass in modo idempotente
+    if ! "$vault_exe" auth list -format=json | jq -e '."userpass/" // empty' &>/dev/null; then
+        log_info "Userpass authentication method not found, enabling it..."
+        "$vault_exe" auth enable userpass || log_error "Failed to enable Userpass auth."
+    else
+        log_info "Userpass authentication method is already enabled. Skipping re-enable."
+    fi
 
     log_info " - Creating example user 'devuser' with password 'devpass'"
-    # Create user; suppress output if it already exists or fails
-    "$vault_exe" write auth/userpass/users/devuser password=devpass policies=default &>/dev/null || \
-      log_warn "User 'devuser' already exists or failed to create."
+    "$vault_exe" write auth/userpass/users/devuser password=devpass policies="default,dev-policy" &>/dev/null || \
+    log_warn "User 'devuser' already exists or failed to create."
 
-    configure_approle # Call function to set up AppRole
-    configure_audit_device # Call function to set up Audit Device
+    configure_approle
+    configure_audit_device
 
     log_info "\n--- Populating test secrets ---"
     log_info " - Writing test secret to secret/test-secret"
