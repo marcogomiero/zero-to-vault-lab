@@ -119,7 +119,8 @@ check_and_install_prerequisites() {
             ;;
         MINGW64_NT*) # Git Bash on Windows
             log_warn "Detected Git Bash on Windows. Please install missing packages manually using 'choco' or equivalent (e.g., choco install ${missing_pkgs[*]})."
-            read -p "Do you want to proceed without installing missing packages? (y/N): " choice
+            echo -e "${YELLOW}Do you want to proceed without installing missing packages? (y/N): ${NC}"
+            read choice
             if [[ "$choice" =~ ^[Yy]$ ]]; then
                 log_warn "Proceeding without installing missing packages. This may cause errors. 🚧"
                 return 0
@@ -129,7 +130,8 @@ check_and_install_prerequisites() {
             ;;
         *)
             log_warn "Unsupported OS type: $os_type. Please install missing packages manually: ${missing_pkgs[*]} 🤷"
-            read -p "Do you want to proceed without installing missing packages? (y/N): " choice
+            echo -e "${YELLOW}Do you want to proceed without installing missing packages? (y/N): ${NC}"
+            read choice
             if [[ "$choice" =~ ^[Yy]$ ]]; then
                 log_warn "Proceeding without installing missing packages. This may cause errors. 🚧"
                 return 0
@@ -145,7 +147,8 @@ check_and_install_prerequisites() {
     fi
 
     echo -e "\nTo ensure proper functioning, this script needs to install the missing packages."
-    read -p "Do you want to install them now? (y/N): " choice
+    echo -e "${YELLOW}Do you want to install them now? (y/N): ${NC}"
+    read choice
 
     if [[ "$choice" =~ ^[Yy]$ ]]; then
         log_info "Installing missing packages: ${missing_pkgs[*]}..."
@@ -161,7 +164,8 @@ check_and_install_prerequisites() {
         fi
     else
         log_warn "Installation skipped. This script may not function correctly without these packages. 🤷"
-        read -p "Do you still want to proceed? (y/N): " choice_proceed
+        echo -e "${YELLOW}Do you still want to proceed? (y/N): ${NC}"
+        read choice_proceed
         if [[ "$choice_proceed" =~ ^[Yy]$ ]]; then
             log_warn "Proceeding at your own risk. 🚧"
         else
@@ -325,7 +329,7 @@ wait_for_vault_up() {
     if curl -s -o /dev/null -w "%{http_code}" "$addr/v1/sys/seal-status" | grep -q "200"; then
       log_info "Vault is listening and responding to APIs after $elapsed seconds. ✅"
       return 0
-    fi
+    fi # Corrected from fì to fi
     sleep 1
     echo -n "." # Progress indicator
     ((elapsed++))
@@ -476,6 +480,9 @@ initialize_and_unseal_vault() {
         echo "$ROOT_TOKEN_VAULT" > "$VAULT_DIR/root_token.txt"
         echo "$UNSEAL_KEY_VAULT" > "$VAULT_DIR/unseal_key.txt"
         log_info "Vault initialized. Root Token and Unseal Key saved in $VAULT_DIR. 🔑"
+        log_warn "WARNING: Root Token and Unseal Key are saved in plain text files in $VAULT_DIR."
+        log_warn "         This is INSECURE for production environments and only suitable for lab use."
+
 
         # After initialization, Vault IS sealed. Get updated status.
         current_status_json=$(get_vault_status)
@@ -616,11 +623,11 @@ configure_audit_device() {
     fi
 }
 
+# --- NUOVE FUNZIONI PIÙ PICCOLE E MIRATE ---
 
-# --- Function: Enable and configure common features ---
-configure_vault_features() {
-    log_info "\nEnabling and configuring common Vault features..."
-
+# Function: Enable and configure secrets engines
+enable_secrets_engines() {
+    log_info "\nEnabling and configuring Vault secrets engines..."
     local vault_exe="$BIN_DIR/vault"
     if [[ "$(uname -s)" == *"MINGW"* ]]; then
         vault_exe="$BIN_DIR/vault.exe"
@@ -635,13 +642,17 @@ configure_vault_features() {
     log_info " - Enabling PKI secrets engine at 'pki/'"
     "$vault_exe" secrets enable pki &>/dev/null
     "$vault_exe" secrets tune -max-lease-ttl=87600h pki &>/dev/null # Set a long TTL for PKI certs
+}
 
-    # Rimuovi la riga successiva, poiché la gestione di userpass sarà centralizzata sotto.
-    # log_info " - Enabling 'userpass' Auth Method at 'userpass/'"
-    # "$vault_exe" auth enable userpass &>/dev/null
+# Function: Configure Vault policies
+configure_policies() {
+    log_info "\nConfiguring Vault policies..."
+    local vault_exe="$BIN_DIR/vault"
+    if [[ "$(uname -s)" == *"MINGW"* ]]; then
+        vault_exe="$BIN_DIR/vault.exe"
+    fi
 
-    # Define a policy for development users (allowing read/list on test secrets)
-    log_info "Creating 'dev-policy' for test users..."
+    log_info " - Creating 'dev-policy' for test users..."
     DEV_POLICY_PATH="$VAULT_DIR/dev-policy.hcl" # Store policy content in a temporary file
     cat > "$DEV_POLICY_PATH" <<EOF
 path "secret/data/test-secret" {
@@ -659,29 +670,56 @@ path "kv/metadata/*" {
 }
 EOF
     "$vault_exe" policy write dev-policy "$DEV_POLICY_PATH" || log_error "Failed to write dev-policy."
+}
 
-    log_info "Enabling and configuring Userpass authentication..."
-    # Aggiungi il controllo qui per abilitare userpass in modo idempotente
+# Function: Configure Userpass authentication method
+configure_userpass_auth() {
+    log_info "\nEnabling and configuring Userpass authentication..."
+    local vault_exe="$BIN_DIR/vault"
+    if [[ "$(uname -s)" == *"MINGW"* ]]; then
+        vault_exe="$BIN_DIR/vault.exe"
+    fi
+
     if ! "$vault_exe" auth list -format=json | jq -e '."userpass/" // empty' &>/dev/null; then
         log_info "Userpass authentication method not found, enabling it..."
         "$vault_exe" auth enable userpass || log_error "Failed to enable Userpass auth."
     else
-        log_info "Userpass authentication method is already enabled. Skipping re-enable."
+        log_info "Userpass authentication method is already enabled. Skipping re-enable. ✅"
     fi
 
     log_info " - Creating example user 'devuser' with password 'devpass'"
     "$vault_exe" write auth/userpass/users/devuser password=devpass policies="default,dev-policy" &>/dev/null || \
     log_warn "User 'devuser' already exists or failed to create."
+}
 
-    configure_approle
-    configure_audit_device
-
+# Function: Populate test secrets
+populate_test_secrets() {
     log_info "\n--- Populating test secrets ---"
+    local vault_exe="$BIN_DIR/vault"
+    if [[ "$(uname -s)" == *"MINGW"* ]]; then
+        vault_exe="$BIN_DIR/vault.exe"
+    fi
+
     log_info " - Writing test secret to secret/test-secret"
     "$vault_exe" kv put secret/test-secret message="Hello from Vault secret!" username="testuser" &>/dev/null
 
     log_info " - Writing test secret to kv/test-secret"
     "$vault_exe" kv put kv/test-secret message="Hello from Vault kv!" database="testdb" &>/dev/null
+}
+
+
+# --- Function: Enable and configure common features (aggiornata per chiamare le nuove funzioni) ---
+configure_vault_features() {
+    log_info "\n=================================================="
+    log_info "CONFIGURING COMMON VAULT FEATURES"
+    log_info "=================================================="
+
+    enable_secrets_engines
+    configure_policies
+    configure_userpass_auth
+    configure_approle
+    configure_audit_device
+    populate_test_secrets
 }
 
 
@@ -699,7 +737,9 @@ handle_existing_lab() {
             cleanup_previous_environment
         else
             log_warn "\nAn existing Vault lab environment was detected in '$VAULT_DIR'."
-            read -p "Do you want to clean it up and start from scratch? (y/N): " choice
+            # Modifica qui: usa echo -e per stampare il prompt colorato, poi read
+            echo -e "${YELLOW}Do you want to clean it up and start from scratch? (y/N): ${NC}"
+            read choice
             case "$choice" in
                 y|Y )
                     cleanup_previous_environment
@@ -746,6 +786,12 @@ display_final_info() {
     echo -e "URL: ${GREEN}$VAULT_ADDR${NC}"
     echo -e "Root Token: ${GREEN}root${NC} (also saved in $VAULT_DIR/root_token.txt)"
     echo -e "Example user: ${GREEN}devuser / devpass${NC} (with 'default' policy)"
+
+    echo -e "\n${RED}SECURITY WARNING:${NC}"
+    echo -e "${RED}The Vault Root Token and Unseal Key are stored in plain text files in ${VAULT_DIR}.${NC}"
+    echo -e "${RED}THIS IS ONLY FOR LAB/DEVELOPMENT PURPOSES AND IS HIGHLY INSECURE FOR PRODUCTION ENVIRONMENTS.${NC}"
+    echo -e "${RED}In production, use secure methods for unsealing (e.g., Auto Unseal, Shamir's Secret Sharing) and manage root tokens with extreme care.${NC}"
+
 
     echo -e "\n${YELLOW}DETAILED ACCESS POINTS:${NC}"
     echo -e "You can read the test secret from 'secret/test-secret' using:"
