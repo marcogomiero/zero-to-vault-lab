@@ -8,9 +8,14 @@ VAULT_CONFIG_DIR="$BASE_DIR/vault_config"
 CONSUL_CONFIG_DIR="$BASE_DIR/consul_config"
 VAULT_DATA_DIR="$BASE_DIR/vault_data"
 CONSUL_DATA_DIR="$BASE_DIR/consul_data"
+BIN_DIR="$BASE_DIR/bin" # Directory for downloaded binaries
 LOG_FILE="$BASE_DIR/setup-vault-consul.log"
 
-# Ensure log file and base directory exist
+# HashiCorp product versions - update as needed
+VAULT_VERSION="1.17.0"
+CONSUL_VERSION="1.18.1"
+
+# Ensure base directory exists and log file is ready
 mkdir -p "$BASE_DIR"
 touch "$LOG_FILE"
 
@@ -21,9 +26,58 @@ log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
 }
 
-# Function to check if a command exists in the PATH
+# Function to check if a command exists in the PATH,
+# or if it's already in our BIN_DIR.
 check_command() {
-  command -v "$1" >/dev/null 2>&1 || { log "Error: $1 CLI not found. Please install it and try again."; exit 1; }
+  if [ -x "$BIN_DIR/$1" ]; then
+    return 0 # Command found in our bin directory
+  fi
+  command -v "$1" >/dev/null 2>&1 || { log "Error: $1 CLI not found. Please install it or ensure it's in PATH. Exiting."; exit 1; }
+}
+
+# Function to download and install HashiCorp binaries
+download_and_install_binaries() {
+  log "Ensuring HashiCorp binaries are available..."
+  mkdir -p "$BIN_DIR"
+
+  # Determine OS and Architecture
+  OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+  ARCH=$(uname -m)
+  case "$ARCH" in
+    x86_64) ARCH="amd64" ;;
+    aarch64) ARCH="arm64" ;;
+    *) log "Error: Unsupported architecture $ARCH. Exiting."; exit 1 ;;
+  esac
+
+  # --- Download and install Vault ---
+  if ! [ -x "$BIN_DIR/vault" ]; then
+    log "Downloading Vault v${VAULT_VERSION} for ${OS}_${ARCH}..."
+    VAULT_URL="https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_${OS}_${ARCH}.zip"
+    curl -sSf -o "$BIN_DIR/vault.zip" "$VAULT_URL" || { log "Error: Failed to download Vault from $VAULT_URL. Exiting."; exit 1; }
+    unzip -o "$BIN_DIR/vault.zip" -d "$BIN_DIR"
+    rm "$BIN_DIR/vault.zip"
+    chmod +x "$BIN_DIR/vault"
+    log "Vault binary installed to $BIN_DIR/vault"
+  else
+    log "Vault binary already exists at $BIN_DIR/vault. Skipping download."
+  fi
+
+  # --- Download and install Consul ---
+  if ! [ -x "$BIN_DIR/consul" ]; then
+    log "Downloading Consul v${CONSUL_VERSION} for ${OS}_${ARCH}..."
+    CONSUL_URL="https://releases.hashicorp.com/consul/${CONSUL_VERSION}/consul_${CONSUL_VERSION}_${OS}_${ARCH}.zip"
+    curl -sSf -o "$BIN_DIR/consul.zip" "$CONSUL_URL" || { log "Error: Failed to download Consul from $CONSUL_URL. Exiting."; exit 1; }
+    unzip -o "$BIN_DIR/consul.zip" -d "$BIN_DIR"
+    rm "$BIN_DIR/consul.zip"
+    chmod +x "$BIN_DIR/consul"
+    log "Consul binary installed to $BIN_DIR/consul"
+  else
+    log "Consul binary already exists at $BIN_DIR/consul. Skipping download."
+  fi
+
+  # Add BIN_DIR to PATH for the current script execution
+  export PATH="$BIN_DIR:$PATH"
+  log "Added $BIN_DIR to PATH for script execution."
 }
 
 # Function to wait for Consul to elect a leader
@@ -119,7 +173,7 @@ initialize_and_unseal_vault() {
   ROOT_TOKEN=$(echo "$VAULT_INIT_OUTPUT" | grep "Root Token:" | awk '{print $NF}')
 
   if [ -z "$UNSEAL_KEY1" ] || [ -z "$ROOT_TOKEN" ]; then
-    log "Error: Failed to extract unseal keys or root token. Vault initialization might have failed."
+    log "Error: Failed to extract unseal keys or root token. Vault initialization might have failed. Exiting."
     exit 1
   fi
 
@@ -150,28 +204,39 @@ cleanup() {
   log "---"
   log "Cleaning up background processes and data..."
 
+  # Stop Vault process
   if [ -f "$BASE_DIR/vault.pid" ]; then
     VAULT_PID=$(cat "$BASE_DIR/vault.pid")
     if ps -p "$VAULT_PID" > /dev/null; then
       log "Stopping Vault (PID: $VAULT_PID)..."
       kill "$VAULT_PID"
       wait "$VAULT_PID" 2>/dev/null || true # Wait for process to terminate, ignore "no such process" error
+    else
+      log "Vault PID file found, but process $VAULT_PID is not running."
     fi
     rm -f "$BASE_DIR/vault.pid"
+  else
+    log "No Vault PID file found."
   fi
 
+  # Stop Consul process
   if [ -f "$BASE_DIR/consul.pid" ]; then
     CONSUL_PID=$(cat "$BASE_DIR/consul.pid")
     if ps -p "$CONSUL_PID" > /dev/null; then
       log "Stopping Consul (PID: $CONSUL_PID)..."
       kill "$CONSUL_PID"
       wait "$CONSUL_PID" 2>/dev/null || true # Wait for process to terminate, ignore "no such process" error
+    else
+      log "Consul PID file found, but process $CONSUL_PID is not running."
     fi
     rm -f "$BASE_DIR/consul.pid"
+  else
+    log "No Consul PID file found."
   fi
 
   # Remove data directories, but add a confirmation if not running in CI/CD
-  if [ -z "$CI" ]; then # Check if not running in a CI environment
+  # Check if CI environment variable is set (common in CI/CD pipelines)
+  if [ -z "${CI}" ]; then
     read -p "Do you want to remove all generated data (config and data directories)? (y/N): " -n 1 -r
     echo # (optional) move to a new line
     if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -181,7 +246,7 @@ cleanup() {
       log "Data directories retained."
     fi
   else
-    log "Running in CI environment, removing data directories: $BASE_DIR"
+    log "Running in CI environment, automatically removing data directories: $BASE_DIR"
     rm -rf "$BASE_DIR"
   fi
 
@@ -196,11 +261,14 @@ trap cleanup EXIT
 
 log "Starting Vault with Consul setup script (monoshell version)."
 
-# Check for necessary commands
-check_command "vault"
-check_command "consul"
+# First, download and install binaries if they are not already present
+download_and_install_binaries
+
+# Now, check for necessary system commands (like curl, unzip, jq)
+# Vault and Consul are now guaranteed to be in BIN_DIR due to download_and_install_binaries
 check_command "curl"
-check_command "jq" # Used implicitly by vault and for parsing
+check_command "unzip" # Required for extracting downloaded binaries
+check_command "jq" # Used by some Vault output parsing or for general JSON handling
 
 # Start Consul in background and wait for it to be ready
 start_consul_background
@@ -214,10 +282,10 @@ initialize_and_unseal_vault
 log "Vault with Consul setup completed successfully."
 log "You can now interact with Vault:"
 log "  Export VAULT_ADDR=http://127.0.0.1:8200"
-log "  Export VAULT_TOKEN=$VAULT_TOKEN (already set in this shell)"
-log "  vault status"
-log "  vault secrets enable -path=secret/ kv-v2"
-log "  vault kv put secret/my-secret value=my-value"
-log "  vault kv get secret/my-secret"
+log "  Export VAULT_TOKEN=$VAULT_TOKEN (already set in this shell for convenience)"
+log "  Try running: vault status"
+log "  Try running: vault secrets enable -path=secret/ kv-v2"
+log "  Try running: vault kv put secret/my-secret value=my-value"
+log "  Try running: vault kv get secret/my-secret"
 log "---"
-log "To stop and clean up, simply exit this shell or run 'kill $(cat $BASE_DIR/consul.pid) $(cat $BASE_DIR/vault.pid)' and then 'rm -rf $BASE_DIR'"
+log "To stop and clean up: Just exit this shell, or manually run 'kill $(cat $BASE_DIR/consul.pid) $(cat $BASE_DIR/vault.pid)' and then 'rm -rf $BASE_DIR'."
