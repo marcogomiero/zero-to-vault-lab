@@ -184,18 +184,3 @@ Disclaimer ⚠️
 -------------
 
 This script is exclusively for laboratory and testing purposes. **IT MUST NOT BE USED IN PRODUCTION ENVIRONMENTS UNDER ANY CIRCUMSTANCE.** The default configurations (such as the root token set to "root", the absence of TLS by default, and audit to `/dev/null`) are designed for maximum simplicity and ease of use in a controlled environment and do not offer any security for a real HashiCorp Vault deployment. Use it responsibly! 😉
-
-Wait! There is more!
---------------------
-
-### `setup-vault-with-consul.sh` (Updated & Optimized - Vault with Consul Storage, Fully Self-Contained)
-
-This script is the **enhanced and optimized version and super-beta** for deploying a complete Vault environment integrated with Consul. It's a **single, self-contained shell script** that fully manages the deployment of **both Consul (running as a development agent) and Vault (configured to use Consul for its backend storage)**. This script builds upon the original approach by adding significant robustness and convenience features.
-
-**Key Features & Improvements:**
-
-* **Self-Contained Binaries:** Automatically downloads and sets up the correct `vault` and `consul` binaries for your operating system and architecture. You **do not** need to install these tools globally beforehand.
-* **Portable Lab Environment:** All configuration files, data, logs, and downloaded binaries are neatly placed within a dedicated subdirectory (`zero-to-vault-lab_data`) in the same folder where you execute the script. This ensures a clean system and makes cleanup extremely easy.
-* **Robust Startup Checks:** Includes intelligent waiting mechanisms to ensure both Consul and Vault services are fully up and running and responsive before proceeding with Vault's initialization and unsealing. This significantly enhances the reliability of the setup process.
-* **Automatic Cleanup:** Features an integrated `trap` cleanup mechanism. This function automatically attempts to stop running Consul and Vault processes when the script exits (even on errors). It also offers to remove all generated data (configuration, data, and downloaded binaries) from the `zero-to-vault-lab_data` directory, allowing for effortless environment resets.
-* **Pure Monoshell:** Runs entirely within your current shell session, without relying on `systemctl` or making permanent modifications to your global system configurations, ensuring maximum portability.
