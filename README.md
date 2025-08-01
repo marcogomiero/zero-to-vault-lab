@@ -47,6 +47,24 @@ Version History 📜
 
 This section tracks the main milestones and features introduced in different versions of the zero-to-vault-lab script.
 
+**v1.3.1 -- Terraform Integration and Automation Scripts Added**
+
+-   Added Terraform example configurations to manage Vault resources, including:
+
+    -   Creation of KV v2 secrets engine
+
+    -   Vault policies and sample secrets
+
+    -   AppRole authentication setup with Role ID and Secret ID outputs
+
+-   Provided bash scripts to automate Terraform workflow (`run-terraform.sh` and `destroy-terraform.sh`):
+
+    -   `run-terraform.sh`: runs `terraform init`, `plan`, and `apply` in sequence
+
+    -   `destroy-terraform.sh`: destroys managed resources and cleans local Terraform files
+
+-   Updated documentation with clear instructions on how to use Terraform in the lab environment, including environment variable setup and usage notes.
+
 **v1.3.0 - Flexible Backend & Interactive Setup (Current)**
 
 Interactive Backend Selection: Added an interactive prompt at startup to choose between file and consul as Vault's storage backend.
