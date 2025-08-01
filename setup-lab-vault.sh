@@ -2,10 +2,13 @@
 
 # --- Global Configuration ---
 BASE_DIR="/mnt/c/Users/gomiero1/PycharmProjects/PythonProject/zero-to-vault-lab" # Your base directory for the Vault lab
-BIN_DIR="$BASE_DIR/bin" # Directory where Vault binary will be stored
+BIN_DIR="$BASE_DIR/bin" # Directory where Vault and Consul binaries will be stored
 VAULT_DIR="$BASE_DIR/vault-lab" # Working directory for Vault data, config, and keys
+CONSUL_DIR="$BASE_DIR/consul-lab" # NEW: Working directory for Consul data and config
 VAULT_ADDR="http://127.0.0.1:8200" # Default Vault address for the lab environment
+CONSUL_ADDR="http://127.0.0.1:8500" # NEW: Default Consul address for the lab environment
 LAB_VAULT_PID_FILE="$VAULT_DIR/vault.pid" # File to store the PID of the running Vault server
+LAB_CONSUL_PID_FILE="$CONSUL_DIR/consul.pid" # NEW: File to store the PID of the running Consul server
 
 # Path for the Audit Log (default for the lab is /dev/null for simplicity)
 # To enable auditing to a real file, change this variable. Example:
@@ -16,6 +19,8 @@ AUDIT_LOG_PATH="/dev/null"
 FORCE_CLEANUP_ON_START=false # Flag to force a clean setup, removing existing data
 VERBOSE_OUTPUT=false # Flag to enable more detailed output for debugging
 COLORS_ENABLED=true # Flag to control colored output. Default to true.
+BACKEND_TYPE_SET_VIA_ARG=false # NEW: Flag to track if backend type was set by arg
+BACKEND_TYPE="file" # Default backend type for Vault (file or consul)
 
 # --- Colors for better output (initial setup) ---
 GREEN='\033[0;32m'
@@ -47,21 +52,25 @@ display_help() {
     echo "This script deploys a HashiCorp Vault lab environment."
     echo ""
     echo "Options:"
-    echo "  -c, --clean    Forces a clean setup, removing any existing Vault data"
-    echo "                 in '$VAULT_DIR' before starting."
-    echo "  -h, --help     Display this help message and exit."
-    echo "  -v, --verbose  Enable verbose output for troubleshooting (currently not fully implemented)."
-    echo "  --no-color     Disable colored output, useful for logging or non-interactive environments."
+    echo "  -c, --clean        Forces a clean setup, removing any existing Vault data"
+    echo "                     in '$VAULT_DIR' and Consul data in '$CONSUL_DIR' before starting."
+    echo "  -h, --help         Display this help message and exit."
+    echo "  -v, --verbose      Enable verbose output for troubleshooting (currently not fully implemented)."
+    echo "  --no-color         Disable colored output, useful for logging or non-interactive environments."
+    echo "  --backend <type>   Choose Vault storage backend: 'file' (default) or 'consul'."
+    echo "                     If not specified, the script will prompt you interactively."
     echo ""
     echo "Default Behavior (no options):"
-    echo "  The script will detect an existing Vault lab in '$VAULT_DIR'."
+    echo "  The script will prompt you to choose the backend type."
+    echo "  It will then detect an existing Vault/Consul lab in '$VAULT_DIR' and '$CONSUL_DIR'."
     echo "  If found, it will ask if you want to clean it up or re-use it."
     echo ""
     echo "Examples:"
     echo "  $0"
     echo "  $0 --clean"
-    echo "  $0 -v"
-    echo "  $0 --no-color"
+    echo "  $0 --backend consul"
+    echo "  $0 -v --backend file"
+    echo "  $0 --no-color --clean --backend consul"
     echo ""
     exit 0 # Exit after displaying help
 }
@@ -217,6 +226,47 @@ stop_vault() {
     fi
 }
 
+# NEW: --- Function: Stop Consul process by PID file ---
+stop_consul() {
+    log_info "Attempting to stop Consul server..."
+    if [ -f "$LAB_CONSUL_PID_FILE" ]; then
+        local pid=$(cat "$LAB_CONSUL_PID_FILE")
+        if ps -p "$pid" > /dev/null; then
+            log_info "Found running Consul process with PID $pid. Attempting graceful shutdown..."
+            kill "$pid" >/dev/null 2>&1
+            sleep 5 # Give it some time to shut down
+            if ps -p "$pid" > /dev/null; then
+                log_warn "Consul process (PID: $pid) did not shut down gracefully. Forcing kill..."
+                kill -9 "$pid" >/dev/null 2>&1
+                sleep 1 # Give it a moment to release the port
+            fi
+            if ! ps -p "$pid" > /dev/null; then
+                log_info "Consul process (PID: $pid) stopped. ✅"
+                rm -f "$LAB_CONSUL_PID_FILE"
+            else
+                log_error "Consul process (PID: $pid) could not be stopped. Manual intervention may be required. 🛑"
+            fi
+        else
+            log_info "No active Consul process found with PID $pid (from $LAB_CONSUL_PID_FILE)."
+            rm -f "$LAB_CONSUL_PID_FILE" # Clean up stale PID file
+        fi
+    else
+        log_info "No Consul PID file found ($LAB_CONSUL_PID_FILE)."
+    fi
+    # Also check if anything else is on 8500
+    local consul_port=$(echo "$CONSUL_ADDR" | cut -d':' -f3)
+    local lingering_pid=$(lsof -ti:"$consul_port" 2>/dev/null)
+    if [ -n "$lingering_pid" ]; then
+        log_warn "Found lingering process(es) on Consul port $consul_port (PIDs: $lingering_pid). Attempting to kill."
+        kill -9 "$lingering_pid" >/dev/null 2>&1
+        sleep 1
+        if lsof -ti:"$consul_port" >/dev/null; then
+             log_error "Could not clear port $consul_port. Manual intervention required. 🛑"
+        else
+            log_info "Lingering processes on port $consul_port cleared. ✅"
+        fi
+    fi
+}
 
 # --- Function: Download or update Vault binary ---
 download_latest_vault_binary() {
@@ -264,7 +314,7 @@ download_latest_vault_binary() {
         return 1
     fi
 
-    log_info "Latest available version (excluding Enterprise): $latest_version"
+    log_info "Latest available Vault version (excluding Enterprise): $latest_version"
 
     if [ -f "$vault_exe" ]; then
         local current_version
@@ -317,6 +367,106 @@ download_latest_vault_binary() {
     return $success
 }
 
+# NEW: --- Function: Download or update Consul binary ---
+download_latest_consul_binary() {
+    local bin_dir="$1"
+    local platform="linux_amd64"
+
+    local os_type=$(uname -s)
+    if [ "$os_type" == "Darwin" ]; then
+        platform="darwin_amd64"
+    elif [[ "$os_type" == *"MINGW"* ]]; then
+        platform="windows_amd64"
+    fi
+
+    local consul_exe="$bin_dir/consul"
+    if [[ "$platform" == *"windows"* ]]; then
+        consul_exe="$bin_dir/consul.exe"
+    fi
+
+    local temp_dir=$(mktemp -d)
+    local success=1
+
+    log_info "=================================================="
+    log_info "CONSUL BINARY MANAGEMENT: CHECK AND DOWNLOAD"
+    log_info "=================================================="
+
+    local consul_releases_json
+    consul_releases_json=$(curl -s "https://releases.hashicorp.com/consul/index.json")
+
+    if [ -z "$consul_releases_json" ]; then
+        log_error "Error: 'curl' received no data from HashiCorp URL. Check internet connection or URL: https://releases.hashicorp.com/consul/index.json"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    local latest_version
+    # Extract the latest non-enterprise version using jq, similar to Vault
+    latest_version=$(echo "$consul_releases_json" | \
+                     tr -d '\r' | \
+                     jq -r '.versions | to_entries | .[] | select((.key | contains("ent") | not) and (.key | contains("-beta") | not) and (.key | contains("-rc") | not) and (.key | contains("-preview") | not)) | .value.version' | \
+                     sort -V | tail -n 1)
+
+    if [ -z "$latest_version" ]; then
+        log_error "Error: Could not determine the latest Consul version. JSON structure might have changed or no match found."
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    log_info "Latest available Consul version (excluding Enterprise/Beta/RC/Preview): $latest_version"
+
+    if [ -f "$consul_exe" ]; then
+        local current_version
+        # Get current Consul binary version - requires running it with version flag
+        current_version=$("$consul_exe" version -short 2>/dev/null | head -n 1 | awk '{print $2}')
+        current_version=${current_version#v} # Remove 'v' prefix
+
+        if [ "$current_version" == "$latest_version" ]; then
+            log_info "Current Consul binary (v$current_version) is already the latest version available."
+            log_info "No download or update needed. Existing binary will be used."
+            rm -rf "$temp_dir"
+            return 0
+        else
+            log_info "Current Consul binary is v$current_version. Latest available version is v$latest_version."
+            log_info "Proceeding with update..."
+        fi
+    else
+        log_info "No Consul binary found in $bin_dir. Proceeding with downloading the latest version."
+    fi
+
+    local download_url="https://releases.hashicorp.com/consul/${latest_version}/consul_${latest_version}_${platform}.zip"
+    local zip_file="$temp_dir/consul.zip"
+
+    log_info "Downloading Consul v$latest_version for $platform from $download_url..."
+    if ! curl -fsSL -o "$zip_file" "$download_url"; then
+        log_error "Error: Failed to download Consul from $download_url. Check internet connection or URL."
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    log_info "Extracting the binary..."
+    if ! unzip -o "$zip_file" -d "$temp_dir" >/dev/null; then
+        log_error "Error: Failed to extract the zip file. Ensure 'unzip' is installed and functional."
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    if [ -f "$temp_dir/consul" ]; then
+        log_info "Moving and configuring the new Consul binary to $bin_dir..."
+        mkdir -p "$bin_dir" # Ensure bin directory exists
+        mv "$temp_dir/consul" "$consul_exe"
+        chmod +x "$consul_exe" # Make the binary executable
+        success=0
+        log_info "Consul v$latest_version downloaded and configured successfully. 🎉"
+    else
+        log_error "Error: 'consul' binary not found in the extracted archive."
+    fi
+
+    rm -rf "$temp_dir" # Clean up temporary directory
+    return $success
+}
+
+
 # --- Function: Wait for Vault to be UP and respond to APIs ---
 wait_for_vault_up() {
   local addr=$1
@@ -329,7 +479,7 @@ wait_for_vault_up() {
     if curl -s -o /dev/null -w "%{http_code}" "$addr/v1/sys/seal-status" | grep -q "200"; then
       log_info "Vault is listening and responding to APIs after $elapsed seconds. ✅"
       return 0
-    fi # Corrected from fì to fi
+    fi
     sleep 1
     echo -n "." # Progress indicator
     ((elapsed++))
@@ -337,6 +487,28 @@ wait_for_vault_up() {
   log_error "Vault did not become reachable after $timeout seconds. Check logs ($VAULT_DIR/vault.log). ❌"
   return 1 # Indicate failure
 }
+
+# NEW: --- Function: Wait for Consul to be UP and respond to APIs ---
+wait_for_consul_up() {
+  local addr=$1
+  local timeout=30
+  local elapsed=0
+
+  log_info "Waiting for Consul to listen on $addr..."
+  while [[ $elapsed -lt $timeout ]]; do
+    # Check if Consul's health endpoint returns 200 OK
+    if curl -s -o /dev/null -w "%{http_code}" "$addr/v1/status/leader" | grep -q "200"; then
+      log_info "Consul is listening and responding to APIs after $elapsed seconds. ✅"
+      return 0
+    fi
+    sleep 1
+    echo -n "." # Progress indicator
+    ((elapsed++))
+  done
+  log_error "Consul did not become reachable after $timeout seconds. Check logs ($CONSUL_DIR/consul.log). ❌"
+  return 1 # Indicate failure
+}
+
 
 # --- Function: Clean up previous environment ---
 cleanup_previous_environment() {
@@ -347,18 +519,117 @@ cleanup_previous_environment() {
     # Use the new stop_vault function for a more robust shutdown
     stop_vault
 
-    log_info "Deleting previous working directories: $VAULT_DIR..."
+    # NEW: Stop Consul if running
+    stop_consul
+
+    log_info "Deleting previous working directories: $VAULT_DIR and $CONSUL_DIR..."
     rm -rf "$VAULT_DIR"
     if [ $? -ne 0 ]; then
         log_error "Failed to remove '$VAULT_DIR'. Check permissions. ❌"
     fi
+    rm -rf "$CONSUL_DIR" # NEW
+    if [ $? -ne 0 ]; then
+        log_error "Failed to remove '$CONSUL_DIR'. Check permissions. ❌"
+    fi
 
-    log_info "Recreating empty directories: $VAULT_DIR..."
+
+    log_info "Recreating empty directories: $VAULT_DIR and $CONSUL_DIR..."
     mkdir -p "$VAULT_DIR"
     if [ $? -ne 0 ]; then
         log_error "Failed to create '$VAULT_DIR'. Check permissions. ❌"
     fi
+    mkdir -p "$CONSUL_DIR" # NEW
+    if [ $? -ne 0 ]; then
+        log_error "Failed to create '$CONSUL_DIR'. Check permissions. ❌"
+    fi
     log_info "Cleanup completed. ✅"
+}
+
+# NEW: --- Function: Configure and start Consul ---
+configure_and_start_consul() {
+    log_info "\n=================================================="
+    log_info "CONFIGURING AND STARTING CONSUL (SINGLE NODE SERVER)"
+    log_info "=================================================="
+
+    local consul_port=$(echo "$CONSUL_ADDR" | cut -d':' -f3)
+
+    # Ensure Consul is not already running on the port by stopping it explicitly
+    stop_consul
+
+    log_info "Configuring Consul HCL file: $CONSUL_DIR/consul_config.hcl"
+    cat > "$CONSUL_DIR/consul_config.hcl" <<EOF
+datacenter = "dc1"
+data_dir = "$CONSUL_DIR/data"
+server = true
+bootstrap_expect = 1
+client_addr = "0.0.0.0"
+bind_addr = "0.0.0.0"
+ui = true
+ports {
+  http = 8500
+  grpc = 8502 # Needed for some newer client features, especially with Vault
+}
+
+# ACL Configuration
+acl = {
+  enabled = true
+  default_policy = "deny"
+  down_policy = "deny"
+  enable_token_persistence = true
+}
+
+# Add telemetry for better debugging if needed
+# telemetry {
+#   prometheus_metrics = true
+#   disable_hostname = true
+# }
+EOF
+
+    # Ensure data directory exists
+    mkdir -p "$CONSUL_DIR/data" || log_error "Failed to create Consul data directory."
+
+    log_info "Starting Consul server in background..."
+    local consul_exe="$BIN_DIR/consul"
+    if [[ "$(uname -s)" == *"MINGW"* ]]; then
+        consul_exe="$BIN_DIR/consul.exe"
+    fi
+
+    # Ensure the consul.log file is ready
+    touch "$CONSUL_DIR/consul.log"
+    chmod 644 "$CONSUL_DIR/consul.log" # Ensure it's readable
+
+    # Start Consul server, redirecting output to a log file
+    "$consul_exe" agent -config-dir="$CONSUL_DIR" > "$CONSUL_DIR/consul.log" 2>&1 &
+    echo $! > "$LAB_CONSUL_PID_FILE" # Store the PID of the background process in a file
+    log_info "Consul server started. PID saved to $LAB_CONSUL_PID_FILE"
+
+    # Wait for Consul to come up and be reachable
+    if ! wait_for_consul_up "$CONSUL_ADDR"; then
+        log_error "Consul server failed to start or respond. Check $CONSUL_DIR/consul.log ❌"
+    fi
+
+    log_info "Bootstrapping Consul ACL Master Token..."
+    local consul_acl_master_token_file="$CONSUL_DIR/acl_master_token.txt"
+    if [ -f "$consul_acl_master_token_file" ]; then
+        log_info "Consul ACL Master Token already exists. Re-using existing token. ✅"
+        export CONSUL_HTTP_TOKEN=$(cat "$consul_acl_master_token_file")
+    else
+        local ACL_BOOTSTRAP_OUTPUT
+        ACL_BOOTSTRAP_OUTPUT=$("$consul_exe" acl bootstrap -format=json)
+        if [ $? -ne 0 ]; then
+            log_error "Consul ACL bootstrap failed. Check $CONSUL_DIR/consul.log. ❌"
+        fi
+        local CONSUL_ROOT_TOKEN=$(echo "$ACL_BOOTSTRAP_OUTPUT" | jq -r '.SecretID')
+        if [ -z "$CONSUL_ROOT_TOKEN" ] || [ "$CONSUL_ROOT_TOKEN" == "null" ]; then
+            log_error "Failed to extract Consul ACL Master Token from bootstrap output. ❌"
+        fi
+        echo "$CONSUL_ROOT_TOKEN" > "$consul_acl_master_token_file"
+        log_info "Consul ACL Master Token saved to $consul_acl_master_token_file. 🔑"
+        log_warn "WARNING: Consul ACL Master Token is saved in plain text files in $CONSUL_DIR."
+        log_warn "         This is INSECURE for production environments and only suitable for lab use."
+        export CONSUL_HTTP_TOKEN="$CONSUL_ROOT_TOKEN" # Set for subsequent Consul commands
+    fi
+    log_info "Consul configured and started with ACLs enabled. ✅"
 }
 
 # --- Function: Configure and start Vault ---
@@ -373,10 +644,35 @@ configure_and_start_vault() {
     stop_vault # Call the new stop function here before starting
 
     log_info "Configuring Vault HCL file: $VAULT_DIR/config.hcl"
-    cat > "$VAULT_DIR/config.hcl" <<EOF
+
+    # Conditional storage configuration based on BACKEND_TYPE
+    local VAULT_STORAGE_CONFIG=""
+    if [ "$BACKEND_TYPE" == "file" ]; then
+        VAULT_STORAGE_CONFIG=$(cat <<EOF
 storage "file" {
   path = "$VAULT_DIR/storage"
 }
+EOF
+)
+        mkdir -p "$VAULT_DIR/storage" || log_error "Failed to create Vault file storage directory."
+    elif [ "$BACKEND_TYPE" == "consul" ]; then
+        if [ ! -f "$CONSUL_DIR/acl_master_token.txt" ]; then
+            log_error "Consul ACL Master Token not found ($CONSUL_DIR/acl_master_token.txt). Cannot configure Vault with Consul backend without it. ❌"
+        fi
+        local consul_acl_token=$(cat "$CONSUL_DIR/acl_master_token.txt")
+        VAULT_STORAGE_CONFIG=$(cat <<EOF
+storage "consul" {
+  address = "127.0.0.1:8500"
+  path    = "vault/"
+  token   = "$consul_acl_token" # Use the Consul ACL master token
+}
+EOF
+)
+    fi
+
+    # Write the main Vault config file
+    cat > "$VAULT_DIR/config.hcl" <<EOF
+$VAULT_STORAGE_CONFIG
 
 listener "tcp" {
   address     = "127.0.0.1:8200"
@@ -731,14 +1027,22 @@ handle_existing_lab() {
         existing_vault_dir_found=true
     fi
 
-    if [ "$existing_vault_dir_found" = true ]; then
+    local existing_consul_dir_found=false # NEW
+    if [ "$BACKEND_TYPE" == "consul" ]; then
+        # Check if CONSUL_DIR exists and contains any files/directories (e.g., data/ config files)
+        if [ -d "$CONSUL_DIR" ] && [ "$(ls -A "$CONSUL_DIR" 2>/dev/null)" ]; then
+            existing_consul_dir_found=true
+        fi
+    fi
+
+    if [ "$existing_vault_dir_found" = true ] || [ "$existing_consul_dir_found" = true ]; then
         if [ "$FORCE_CLEANUP_ON_START" = true ]; then
-            log_info "\nForce clean option activated. Cleaning up old Vault data..."
+            log_info "\nForce clean option activated. Cleaning up old lab data..."
             cleanup_previous_environment
         else
-            log_warn "\nAn existing Vault lab environment was detected in '$VAULT_DIR'."
+            log_warn "\nAn existing Vault/Consul lab environment was detected in '$VAULT_DIR' and/or '$CONSUL_DIR'."
             # Modifica qui: usa echo -e per stampare il prompt colorato, poi read
-            echo -e "${YELLOW}Do you want to clean it up and start from scratch? (y/N): ${NC}"
+            echo -e "${YELLOW}Do you want to clean it up and start from scratch (Y/N, default: N)? ${NC}"
             read choice
             case "$choice" in
                 y|Y )
@@ -746,11 +1050,15 @@ handle_existing_lab() {
                     ;;
                 * )
                     log_info "Skipping full data cleanup. Attempting to re-use existing data."
-                    log_info "Note: Re-using will ensure Vault is running, initialized, unsealed, and configurations reapplied."
+                    log_info "Note: Re-using will ensure services are running, initialized, and configurations reapplied."
 
-                    # Ensure bin directory exists and Vault binary is downloaded/updated
+                    # Ensure bin directory exists and binaries are downloaded/updated
                     mkdir -p "$BIN_DIR" || log_error "Failed to create $BIN_DIR."
                     download_latest_vault_binary "$BIN_DIR"
+                    if [ "$BACKEND_TYPE" == "consul" ]; then # NEW
+                        download_latest_consul_binary "$BIN_DIR" # NEW
+                        configure_and_start_consul # NEW: Start Consul first for Vault to connect
+                    fi
 
                     # Ensure Vault is started and its PID is set
                     configure_and_start_vault
@@ -770,7 +1078,7 @@ handle_existing_lab() {
             esac
         fi
     else
-        log_info "\nNo existing Vault lab data found. Proceeding with a fresh setup. ✨"
+        log_info "\nNo existing Vault/Consul lab data found. Proceeding with a fresh setup. ✨"
     fi
 }
 
@@ -787,10 +1095,22 @@ display_final_info() {
     echo -e "Root Token: ${GREEN}root${NC} (also saved in $VAULT_DIR/root_token.txt)"
     echo -e "Example user: ${GREEN}devuser / devpass${NC} (with 'default' policy)"
 
+    if [ "$BACKEND_TYPE" == "consul" ]; then # NEW
+        echo -e "\n${YELLOW}CONSUL DETAILS:${NC}"
+        echo -e "Consul URL: ${GREEN}$CONSUL_ADDR${NC}"
+        echo -e "Consul UI: ${GREEN}$CONSUL_ADDR/ui${NC}"
+        if [ -f "$CONSUL_DIR/acl_master_token.txt" ]; then
+            echo -e "Consul ACL Master Token (for management): ${GREEN}$(cat "$CONSUL_DIR/acl_master_token.txt")${NC}"
+            echo -e "Export for CLI: ${GREEN}export CONSUL_HTTP_TOKEN=\"$(cat "$CONSUL_DIR/acl_master_token.txt")\"${NC}"
+            echo -e "Test connection: ${GREEN}$BIN_DIR/consul members${NC} (after exporting token)"
+        fi
+    fi
+
     echo -e "\n${RED}SECURITY WARNING:${NC}"
     echo -e "${RED}The Vault Root Token and Unseal Key are stored in plain text files in ${VAULT_DIR}.${NC}"
+    echo -e "${RED}If using Consul backend, the Consul ACL Master Token is stored in ${CONSUL_DIR}.${NC}"
     echo -e "${RED}THIS IS ONLY FOR LAB/DEVELOPMENT PURPOSES AND IS HIGHLY INSECURE FOR PRODUCTION ENVIRONMENTS.${NC}"
-    echo -e "${RED}In production, use secure methods for unsealing (e.g., Auto Unseal, Shamir's Secret Sharing) and manage root tokens with extreme care.${NC}"
+    echo -e "${RED}In production, use secure methods for unsealing (e.g., Auto Unseal, Shamir's Secret Sharing) and manage root tokens/ACLs with extreme care.${NC}"
 
 
     echo -e "\n${YELLOW}DETAILED ACCESS POINTS:${NC}"
@@ -825,25 +1145,41 @@ display_final_info() {
     echo "vault write auth/approle/login role_id=\"$(cat "$VAULT_DIR/approle_role_id.txt" 2>/dev/null)\" secret_id=\"$(cat "$VAULT_DIR/approle_secret_id.txt" 2>/dev/null)\""
     echo "Note: The Secret ID is typically single-use for new creations. This command is for testing the login itself."
 
-    echo -e "\n${YELLOW}To stop the server:${NC}"
+    echo -e "\n${YELLOW}To stop the server(s):${NC}"
     # Use the PID from the file for specific shutdown instruction
     local current_lab_vault_pid=""
     if [ -f "$LAB_VAULT_PID_FILE" ]; then
         current_lab_vault_pid=$(cat "$LAB_VAULT_PID_FILE")
     fi
+    local current_lab_consul_pid="" # NEW
+    if [ -f "$LAB_CONSUL_PID_FILE" ]; then # NEW
+        current_lab_consul_pid=$(cat "$LAB_CONSUL_PID_FILE") # NEW
+    fi
+
 
     if [ -n "$current_lab_vault_pid" ]; then
-        echo -e "  ${GREEN}kill $current_lab_vault_pid${NC} (uses PID from $LAB_VAULT_PID_FILE)"
+        echo -e "  ${GREEN}kill $current_lab_vault_pid${NC} (Vault PID from $LAB_VAULT_PID_FILE)"
     else
-        echo -e "  Could not find Vault PID in $LAB_VAULT_PID_FILE. To stop Vault, find its PID (e.g., ${GREEN}lsof -ti:8200${NC}) and then ${GREEN}kill <PID>${NC}."
+        log_warn "Vault PID file not found. Can't provide specific kill command for Vault. ⚠️"
     fi
-    echo "Or to stop all running Vault instances (less specific, use with caution):"
+
+    if [ -n "$current_lab_consul_pid" ]; then # NEW
+        echo -e "  ${GREEN}kill $current_lab_consul_pid${NC} (Consul PID from $LAB_CONSUL_PID_FILE)" # NEW
+    else # NEW
+        log_warn "Consul PID file not found. Can't provide specific kill command for Consul. ⚠️" # NEW
+    fi
+
+    echo "Or to stop all running HashiCorp instances (less specific, use with caution):"
     echo -e "  ${GREEN}pkill -f \"vault server\"${NC}"
-    echo "  (Note: Killing by PID from the .pid file is safer as it targets only this lab's Vault instance)."
+    echo -e "  ${GREEN}pkill -f \"consul agent\"${NC}" # NEW
+    echo "  (Note: Killing by PID from the .pid file is safer as it targets only this lab's instance)."
     echo -e "  Alternatively, run: ${GREEN}$0 stop${NC} (if you implement a 'stop' command option)" # Suggest a future feature
 
     log_info "\nEnjoy your Vault!"
-    log_info "Logs are available at: $VAULT_DIR/vault.log" # Emphasize log location
+    log_info "Vault logs are available at: $VAULT_DIR/vault.log" # Emphasize log location
+    if [ "$BACKEND_TYPE" == "consul" ]; then # NEW
+        log_info "Consul logs are available at: $CONSUL_DIR/consul.log" # NEW
+    fi
 }
 
 
@@ -856,23 +1192,33 @@ main() {
     fi
 
     # Parse command-line arguments
-    # This loop processes all arguments provided to the script.
-    # It supports -h/--help for help, -c/--clean for forced cleanup, -v/--verbose for more output,
-    # and --no-color to explicitly disable colors.
     local arg
-    for arg in "$@"; do
+    while [[ $# -gt 0 ]]; do # Loop through all arguments
+        arg="$1"
         case $arg in
             -h|--help)
                 display_help
                 ;;
             -c|--clean)
                 FORCE_CLEANUP_ON_START=true
+                shift
                 ;;
             -v|--verbose)
-                VERBOSE_OUTPUT=true # Currently this flag is not fully integrated for conditional logging.
+                VERBOSE_OUTPUT=true
+                shift
                 ;;
-            --no-color) # Handle new --no-color flag
-                COLORS_ENABLED=false # User explicitly requests no colors
+            --no-color)
+                COLORS_ENABLED=false
+                shift
+                ;;
+            --backend)
+                if [[ -n "$2" && ("$2" == "file" || "$2" == "consul") ]]; then
+                    BACKEND_TYPE="$2"
+                    BACKEND_TYPE_SET_VIA_ARG=true # Set flag to true
+                    shift 2
+                else
+                    log_error "Error: --backend requires 'file' or 'consul' as an argument."
+                fi
                 ;;
             *)
                 log_error "Unknown option '$arg'. Use -h or --help for usage."
@@ -881,8 +1227,6 @@ main() {
     done
 
     # Apply color disabling *after* parsing options and TTY check
-    # This ensures that if COLORS_ENABLED is false (either by TTY check or --no-color),
-    # the color variables are set to empty.
     if [ "$COLORS_ENABLED" = false ]; then
         GREEN=''
         YELLOW=''
@@ -890,14 +1234,29 @@ main() {
         NC=''
     fi
 
+    # NEW: Interactive prompt for backend type if not set via argument
+    if [ "$BACKEND_TYPE_SET_VIA_ARG" = false ]; then
+        echo -e "\n${YELLOW}Choose Vault storage backend (file/consul, default: file): ${NC}"
+        read -p "Type 'file' or 'consul': " user_backend_choice
+        case "$user_backend_choice" in
+            consul|CONSUL )
+                BACKEND_TYPE="consul"
+                ;;
+            file|FILE|"" ) # Empty input defaults to file
+                BACKEND_TYPE="file"
+                ;;
+            * )
+                log_warn "Invalid backend choice '$user_backend_choice'. Defaulting to 'file'."
+                BACKEND_TYPE="file"
+                ;;
+        esac
+        log_info "Selected backend: $BACKEND_TYPE"
+    fi
+
     # Step 1: Check and install necessary prerequisites (curl, jq, unzip, lsof).
-    # This ensures the script has all required tools before proceeding.
     check_and_install_prerequisites
 
     # Step 2: Handle existing lab environment.
-    # This function checks if a previous Vault lab setup exists and prompts the user
-    # to either clean it up or attempt to re-use it. If re-used, it intelligently
-    # re-applies configurations.
     handle_existing_lab
 
     # If we reach here, it means either:
@@ -906,26 +1265,26 @@ main() {
     # So, we proceed with a fresh setup or a re-initialization.
 
     # Step 3: Download or update the Vault binary.
-    # This ensures the latest stable non-enterprise version of Vault is available.
     mkdir -p "$BIN_DIR" || log_error "Failed to create directory $BIN_DIR. Check permissions."
     download_latest_vault_binary "$BIN_DIR"
     log_info "=================================================="
 
+    # If Consul backend is chosen, download and start Consul first
+    if [ "$BACKEND_TYPE" == "consul" ]; then
+        download_latest_consul_binary "$BIN_DIR"
+        configure_and_start_consul
+    fi
+
     # Step 4: Configure and start the Vault server.
-    # This creates the necessary configuration file and launches the Vault process.
     configure_and_start_vault
 
     # Step 5: Initialize and unseal Vault.
-    # If Vault is not initialized, it performs initialization and unseals it.
-    # If already initialized, it attempts to unseal if sealed.
     initialize_and_unseal_vault
 
     # Step 6: Configure common Vault features.
-    # This includes enabling KV secrets engines, PKI, Userpass auth, AppRole, and Audit Device.
     configure_vault_features
 
     # Step 7: Display final access information to the user.
-    # Provides all details needed to interact with the deployed Vault lab.
     display_final_info
 }
 
