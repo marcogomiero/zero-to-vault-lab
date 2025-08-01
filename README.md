@@ -8,9 +8,13 @@ Key Features ✨
 
 This script automates the creation of a single-instance Vault environment with the following configurations:
 
+-   **Flexible Backend Choice:** Choose between `file` (default) or `consul` as Vault's storage backend, with an interactive prompt at startup if `--backend` argument is not explicitly provided. This allows you to explore different Vault persistence options. 🗄️
+
+-   **Integrated Consul Environment (for 'consul' backend):** If you choose the `consul` backend, the script automatically downloads and sets up a single-node Consul server, bootstraps ACLs, and configures Vault to use it as its durable storage. 🌿
+
 -   **Automated Vault Installation:** Automatically downloads and sets up the **latest stable Vault binary** (excluding Enterprise and Release Candidate versions). If a recent version is already present, it reuses it to save you time. ⏱️
 
--   **Robust Process Management:** The setup script tracks the Vault server's Process ID (PID) for a more reliable and targeted shutdown. ✅
+-   **Robust Process Management:** The setup script tracks the Vault server's Process ID (PID) and the Consul server's PID (if used) for a more reliable and targeted shutdown. ✅
 
 -   **Pre-configured Environment:**
 
@@ -34,9 +38,44 @@ This script automates the creation of a single-instance Vault environment with t
 
 -   **Test Secrets:** Some example secrets are populated to facilitate initial testing and let you start experimenting with Vault right away. 🧪
 
--   **Clear Output:** Upon setup completion, the script provides all essential information to access and interact with your Vault environment (URL, token, AppRole credentials, example commands). No searching, everything at your fingertips! 📋
+-   **Clear Output:** Upon setup completion, the script provides all essential information to access and interact with your Vault environment (URL, token, AppRole credentials, example commands). If using Consul, it also provides Consul UI and ACL token details. No searching, everything at your fingertips! 📋
 
 -   **Flexible Output:** Supports colored terminal output by default, but can be disabled for scripting or logging purposes. 🌈
+
+Version History 📜
+------------------
+
+This section tracks the main milestones and features introduced in different versions of the zero-to-vault-lab script.
+
+**v1.3.0 - Flexible Backend & Interactive Setup (Current)**
+
+Interactive Backend Selection: Added an interactive prompt at startup to choose between file and consul as Vault's storage backend.
+
+Consul Backend Support: Full integration for using HashiCorp Consul as Vault's durable storage backend, including automatic binary download, setup, and ACL bootstrapping for Consul.
+
+Enhanced Lab Cleanup: Improved detection and interactive cleanup for pre-existing data from both Vault and Consul environments.
+
+Robust Process Management: More reliable stopping routines for both Vault and Consul processes.
+
+**v1.2.0 - Automated Prerequisite Management**
+
+Automatic Prerequisite Installation: The script now checks for curl, jq, unzip, and lsof and offers to install them automatically using the system's package manager if missing.
+
+Cross-OS Compatibility Improvements: Enhanced binary download logic for different operating systems (Linux, macOS, Windows/WSL).
+
+**v1.1.0 - Automated Binary Download**
+
+Automatic Vault Binary Management: Introduced logic to automatically download the latest stable Vault binary.
+
+Intelligent Updates: The script now checks the local Vault binary version against the latest available release and only downloads/updates if necessary.
+
+**v1.0.0 - Initial Release**
+
+Basic Vault Lab Setup: First functional version providing an automated setup for a single-instance Vault lab.
+
+Pre-configuration: Included automatic initialization, unsealing, basic secrets engine enablement (KV, PKI), authentication method setup (AppRole, Userpass), and test secret population.
+
+Essential Management: Provided clear instructions and a separate script (stop.sh) for stopping and cleaning the lab environment.
 
 Prerequisites 🛠️
 -----------------
