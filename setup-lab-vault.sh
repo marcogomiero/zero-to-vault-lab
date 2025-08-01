@@ -92,6 +92,7 @@ check_and_install_prerequisites() {
     pkg_map["jq"]="jq"
     pkg_map["unzip"]="unzip"
     pkg_map["lsof"]="lsof"
+    pkg_map["terraform"]="terraform"
 
     for cmd_name in "${!pkg_map[@]}"; do
         if ! command -v "${pkg_map[$cmd_name]}" &> /dev/null; then
@@ -100,7 +101,7 @@ check_and_install_prerequisites() {
     done
 
     if [ ${#missing_pkgs[@]} -eq 0 ]; then
-        log_info "All necessary prerequisites (curl, jq, unzip, lsof) are already installed. 👍"
+        log_info "All necessary prerequisites (curl, jq, unzip, lsof, terraform) are already installed. 👍"
         return 0 # All good
     fi
 
