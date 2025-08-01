@@ -416,11 +416,16 @@ download_latest_consul_binary() {
 
     log_info "Latest available Consul version (excluding Enterprise/Beta/RC/Preview): $latest_version"
 
-    if [ -f "$consul_exe" ]; then
+     if [ -f "$consul_exe" ]; then
         local current_version
-        # Get current Consul binary version - requires running it with version flag
-        current_version=$("$consul_exe" version -short 2>/dev/null | head -n 1 | awk '{print $2}')
-        current_version=${current_version#v} # Remove 'v' prefix
+        # Get current Consul binary version by parsing the full 'consul version' output
+        # This method is more robust against variations in '-short' output or silent failures.
+        current_version=$("$consul_exe" version 2>/dev/null | grep -E "^Consul v[0-9.]+" | head -n 1 | sed -E 's/Consul v([0-9.]+).*/\1/')
+
+        if [ "$?" -ne 0 ] || [ -z "$current_version" ]; then
+            log_warn "Could not get current Consul version. The output of 'consul version' might be unexpected or the binary is not fully functional. Proceeding with download."
+            current_version="" # Ensure it's empty to force download if parsing fails
+        fi
 
         if [ "$current_version" == "$latest_version" ]; then
             log_info "Current Consul binary (v$current_version) is already the latest version available."
