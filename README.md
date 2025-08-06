@@ -89,6 +89,8 @@ Follow these simple steps to start and configure your Vault environment:
 
     -   **`restart`**: Stops the Vault and Consul (if applicable) servers and then starts them again.
 
+    -   **`reset`**: Restart Vault (and Consul if applicable) to original config.
+
     -   **`status`**: Checks and displays the current operational status of the Vault and Consul (if applicable) servers.
 
     -   **`cleanup`**: Removes all Vault and Consul (if applicable) lab data and stops any running instances.
@@ -267,7 +269,21 @@ This section tracks the main milestones and features introduced in different ver
 
 ### Vault Lab (`vault-lab-ctl.sh`)
 
-**v1.4.0 - Unified Control & Backend Persistence (Current)**
+**v1.4.1 (Current)**
+- Added `restart` command to vault-lab-ctl.sh:
+  * Restarts Vault (and Consul if applicable) without reconfiguring
+  * Automatically unseals Vault after restart
+- Added `reset` command to vault-lab-ctl.sh:
+  * Performs full cleanup and fresh start, restoring initial lab state
+- Updated help output to include new commands
+- Improved command dispatch logic to support restart/reset cleanly
+- Introduced `vault-lab-smoketest.sh`:
+  * Automated smoke tests for all key commands (start, restart, reset, cleanup)
+  * Runs tests for both 'file' and 'consul' backends
+  * Provides colored PASS/FAIL output and detailed logs
+  * Includes summary of passed/failed tests
+
+**v1.4.0 - Unified Control & Backend Persistence**
 
 This version significantly enhances the lab environment management by consolidating all operations into a single control script (`vault-lab-ctl.sh`) and introducing persistent backend configuration.
 
