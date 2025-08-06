@@ -657,8 +657,14 @@ EOF
     log_info "Consul server started. PID saved to $LAB_CONSUL_PID_FILE"
 
     # Wait for Consul to come up and be reachable
-    if ! wait_for_consul_up "$CONSUL_ADDR"; then
+    if wait_for_consul_up "$CONSUL_ADDR"; then
+        # Se la funzione ha successo, aggiungiamo il ritardo
+        log_info "Consul server is up. Waiting 5 seconds for cluster to stabilize before bootstrapping ACLs..."
+        sleep 5
+    else
+        # Se la funzione fallisce, il messaggio di errore è già gestito
         log_error "Consul server failed to start or respond. Check $CONSUL_DIR/consul.log ❌"
+        exit 1
     fi
 
     log_info "Bootstrapping Consul ACL Master Token..."

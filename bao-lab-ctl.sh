@@ -42,37 +42,61 @@ display_help() {
     echo "Usage: $0 [OPTIONS] [COMMAND]"
     echo ""
     echo "This script deploys an OpenBao lab environment using 'file' storage backend."
-    echo "It configures OpenBao with HTTPS using a self-signed certificate."
-    echo ""
     echo "Options:"
-    echo "  -c, --clean        Forces a clean setup, removing any existing OpenBao data"
-    echo "                     in '$BAO_DIR' before starting."
-    echo "  -h, --help         Display this help message and exit."
-    echo "  -v, --verbose      Enable verbose output for troubleshooting (currently not fully implemented)."
-    echo "  --no-color         Disable colored output, useful for logging or non-interactive environments."
-    echo "  -b, --base-directory <path>"
-    echo "                     Specify the base directory for the OpenBao lab. Default: $BASE_DIR"
+    echo "  -c, --clean        Forces a clean setup (removes existing data)."
+    echo "  -h, --help         Display this help message."
+    echo "  -v, --verbose      Enable verbose output."
+    echo "  --no-color         Disable colored output."
+    echo "  -b, --base-directory <path>  Specify custom base directory."
     echo ""
     echo "Commands:"
-    echo "  start              (Default) Configures and starts the OpenBao lab."
-    echo "  stop               Stops the running OpenBao server."
-    echo "  restart            Stops and then starts the OpenBao lab."
-    echo "  status             Checks and displays the current status of the OpenBao server."
-    echo "  cleanup            Removes all OpenBao lab data and stops any running instances."
-    echo ""
-    echo "Default Behavior (no options/commands):"
-    echo "  The script will run the 'start' command."
-    echo ""
-    echo "Examples:"
-    echo "  $0"
-    echo "  $0 --clean"
-    echo "  $0 stop"
-    echo "  $0 restart"
-    echo "  $0 status"
-    echo "  $0 cleanup"
-    echo "  $0 start --clean -b /tmp/my-bao-lab"
-    echo ""
+    echo "  start              Setup and start OpenBao lab (default)."
+    echo "  stop               Stop OpenBao server."
+    echo "  restart            Restart OpenBao and unseal it without reconfiguring."
+    echo "  reset              Fully reset the lab (cleanup + fresh start)."
+    echo "  status             Show current OpenBao status."
+    echo "  cleanup            Remove all lab data and stop any running instance."
     exit 0
+}
+
+# --- Restart Lab ---
+restart_lab_environment() {
+    log_info "\n=================================================="
+    log_info "RESTARTING OPENBAO LAB ENVIRONMENT"
+    log_info "=================================================="
+
+    stop_lab_environment
+    log_info "Waiting briefly before restarting..."
+    sleep 3
+
+    configure_and_start_bao
+    initialize_and_unseal_bao
+
+    log_info "OpenBao lab restarted and unsealed. 🔄"
+}
+
+# --- Reset Lab ---
+reset_lab_environment() {
+    log_info "\n=================================================="
+    log_info "RESETTING OPENBAO LAB ENVIRONMENT"
+    log_info "=================================================="
+
+    cleanup_previous_environment
+    mkdir -p "$BIN_DIR" || log_error "Failed to create $BIN_DIR."
+    download_latest_bao_binary "$BIN_DIR"
+    configure_and_start_bao
+    initialize_and_unseal_bao
+    configure_bao_features
+    display_final_info
+}
+
+# --- Stop Lab ---
+stop_lab_environment() {
+    log_info "\n=================================================="
+    log_info "STOPPING OPENBAO LAB"
+    log_info "=================================================="
+    stop_bao
+    log_info "OpenBao lab environment stopped."
 }
 
 # --- Function: Check and Install Prerequisites ---
@@ -844,19 +868,27 @@ restart_lab_environment() {
     log_info "\n=================================================="
     log_info "RESTARTING OPENBAO LAB ENVIRONMENT"
     log_info "=================================================="
-    stop_lab_environment
-    # Call main with 'start' command, preserving existing options like --clean if applicable
-    # We pass "$@" to main to re-process the original arguments, excluding 'restart' itself
-    # This requires careful handling if 'start' accepts other flags that 'restart' also uses.
-    # For simplicity, we'll just force a clean start after stop.
-    log_info "Waiting a moment before starting OpenBao again..."
-    sleep 3
-    # Call the main function again with the 'start' command, and any other flags that were passed
-    # to the original script (e.g., --clean).
-    main "start" "$@"
-    log_info "OpenBao lab environment restarted. 🔄"
-}
 
+    # Stop OpenBao
+    stop_lab_environment
+    log_info "Waiting a moment before restarting OpenBao..."
+    sleep 3
+
+    # Avvia direttamente Bao senza ripetere setup/config
+    log_info "Restarting OpenBao using existing configuration..."
+    local bao_exe="$BIN_DIR/bao"
+    if [[ "$(uname -s)" == *"MINGW"* ]]; then bao_exe="$BIN_DIR/bao.exe"; fi
+
+    "$bao_exe" server -config="$BAO_DIR/config.hcl" > "$BAO_DIR/bao.log" 2>&1 &
+    echo $! > "$LAB_BAO_PID_FILE"
+
+    wait_for_bao_up "$BAO_ADDR"
+
+    # Unseal automatico
+    initialize_and_unseal_bao
+
+    log_info "OpenBao restarted and unsealed. 🔄"
+}
 
 # --- Function: Check and display lab status ---
 check_lab_status() {
@@ -986,93 +1018,51 @@ display_final_info() {
 
 # --- Main Script Execution Logic ---
 main() {
-    if [ ! -t 1 ]; then
-        COLORS_ENABLED=false
-    fi
+    if [ ! -t 1 ]; then COLORS_ENABLED=false; fi
 
-    local command="start" # Default command
-    local temp_base_dir="" # Temporary variable for parsing --base-directory
+    local command="start"
+    local temp_base_dir=""
 
-    # Parse options first
     local i=1
     while [[ $i -le $# ]]; do
         local arg="${!i}"
         case "$arg" in
-            -h|--help)
-                display_help
-                exit 0 # Exit after displaying help
-                ;;
-            -c|--clean)
-                FORCE_CLEANUP_ON_START=true
-                ;;
-            -v|--verbose)
-                VERBOSE_OUTPUT=true
-                ;;
-            --no-color)
-                COLORS_ENABLED=false
-                ;;
-            -b|--base-directory)
-                i=$((i+1))
-                temp_base_dir="${!i}"
-                ;;
-            start|stop|restart|status|cleanup)
-                command="$arg" # Capture the command
-                ;;
-            *)
-                # If it's not a known option or command, it's an unknown argument
-                # or an argument for a command (which we handle later if needed)
-                ;;
+            -h|--help) display_help ;;
+            -c|--clean) FORCE_CLEANUP_ON_START=true ;;
+            -v|--verbose) VERBOSE_OUTPUT=true ;;
+            --no-color) COLORS_ENABLED=false ;;
+            -b|--base-directory) i=$((i+1)); temp_base_dir="${!i}" ;;
+            start|stop|restart|reset|status|cleanup) command="$arg" ;;
         esac
         i=$((i+1))
     done
 
-    # Set BASE_DIR if provided, and then derive other paths
     if [ -n "$temp_base_dir" ]; then
         BASE_DIR="$temp_base_dir"
-        BIN_DIR="$BASE_DIR/bin" # Corrected: Removed trailing '<'
+        BIN_DIR="$BASE_DIR/bin"
         BAO_DIR="$BASE_DIR/bao-lab"
         LAB_BAO_PID_FILE="$BAO_DIR/bao.pid"
     fi
 
+    if [ "$COLORS_ENABLED" = false ]; then GREEN=''; YELLOW=''; RED=''; NC=''; fi
 
-    if [ "$COLORS_ENABLED" = false ]; then
-        GREEN=''
-        YELLOW=''
-        RED=''
-        NC=''
-    fi
-
-    log_info "OpenBao storage backend is forced to 'file'."
-    BACKEND_TYPE="file"
-
-    # Execute the chosen command
     case "$command" in
         start)
             check_and_install_prerequisites
-            handle_existing_lab # This will call cleanup_previous_environment if --clean is set
-            mkdir -p "$BIN_DIR" || log_error "Failed to create directory $BIN_DIR. Check permissions."
+            handle_existing_lab
+            mkdir -p "$BIN_DIR" || log_error "Failed to create $BIN_DIR."
             download_latest_bao_binary "$BIN_DIR"
-            log_info "=================================================="
             configure_and_start_bao
             initialize_and_unseal_bao
             configure_bao_features
             display_final_info
             ;;
-        stop)
-            stop_lab_environment
-            ;;
-        restart)
-            restart_lab_environment
-            ;;
-        status)
-            check_lab_status
-            ;;
-        cleanup)
-            cleanup_previous_environment
-            ;;
-        *)
-            log_error "Invalid command '$command'. Use -h or --help for usage."
-            ;;
+        stop) stop_lab_environment ;;
+        restart) restart_lab_environment ;;
+        reset) reset_lab_environment ;;
+        status) check_lab_status ;;
+        cleanup) cleanup_previous_environment ;;
+        *) log_error "Invalid command '$command'. Use -h for help." ;;
     esac
 }
 
