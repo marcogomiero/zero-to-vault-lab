@@ -1,5 +1,5 @@
 #!/bin/bash
-set -uo pipefail
+set -euo pipefail
 
 # ==========================================
 # Vault & OpenBao Lab Smoke Test Script
@@ -11,8 +11,13 @@ set -uo pipefail
 # Usage:
 #   ./lab-smoketest.sh [all|vault|bao|advanced]
 #
+#   - all (default):   Runs all tests.
+#   - vault:           Runs basic tests for Vault (file and consul backends).
+#   - bao:             Runs basic tests for OpenBao.
+#   - advanced:        Runs advanced tests for Vault (AppRole auth & token renewal).
+#
 # Logs:
-#   - Console output: colored PASS/FAIL markers in single line
+#   - Console output: colored PASS/FAIL markers, including the command
 #   - Full details: ONLY for failed tests in ./smoketest.log
 # ==========================================
 
@@ -31,42 +36,10 @@ NC='\033[0m'
 TESTS_TOTAL=0
 TESTS_PASSED=0
 TESTS_FAILED=0
-TOTAL_EXPECTED_TESTS=0
 ROOT_TOKEN=""
-VERBOSE=false
 
-# --- Timer start ---
-START_TIME=$(date +%s)
-
-# --- Parse CLI parameters ---
-ARGS=()
-for arg in "$@"; do
-    case "$arg" in
-        -v|--verbose)
-            VERBOSE=true
-            ;;
-        *)
-            ARGS+=("$arg")
-            ;;
-    esac
-done
-
-TEST_SCOPE="${ARGS[0]:-all}"
-
-# --- Show progress bar ---
-show_progress() {
-    local current=$1
-    local total=$2
-    local percent=$(( 100 * current / total ))
-    local bar_length=20
-    local filled=$(( bar_length * percent / 100 ))
-    local empty=$(( bar_length - filled ))
-
-    printf "\r["
-    printf "%0.s#" $(seq 1 $filled)
-    printf "%0.s." $(seq 1 $empty)
-    printf "] %3d%% (%d/%d) - " "$percent" "$current" "$total"
-}
+echo -e "${CYAN}=== Vault & OpenBao Lab Smoke Test ===${NC}"
+echo "Test started at: $(date)"
 
 # --- Run single test ---
 run_test() {
@@ -74,61 +47,56 @@ run_test() {
     local command="$2"
     TESTS_TOTAL=$((TESTS_TOTAL+1))
 
-    show_progress "$TESTS_TOTAL" "$TOTAL_EXPECTED_TESTS"
-    printf "Testing: %-50s" "$description"
+    echo -e "\n${YELLOW}[TEST]${NC} $description"
+    echo "\$ $command"
 
     local output
     if ! output=$(eval "$command" 2>&1); then
-        printf "\r[${RED}FAIL${NC}] "
-        printf "%-70s" "$description"
-        printf " (Test $TESTS_TOTAL/$TOTAL_EXPECTED_TESTS)\n"
-
-        echo -e "--- Failure Details ---" >>"$LOG_FILE"
-        echo "Test failed: $description" >>"$LOG_FILE"
+        echo -e "${RED}[FAIL]${NC} $description"
+        echo -e "--- Dettagli del Fallimento ---" >>"$LOG_FILE"
+        echo "$description fallito." >>"$LOG_FILE"
         echo "\$ $command" >>"$LOG_FILE"
         echo "$output" >>"$LOG_FILE"
-        echo "------------------------" >>"$LOG_FILE"
+        echo "------------------------------" >>"$LOG_FILE"
         TESTS_FAILED=$((TESTS_FAILED+1))
+        return 1
     else
-        printf "\r[${GREEN}PASS${NC}] "
-        printf "%-70s" "$description"
-        printf " (Test $TESTS_TOTAL/$TOTAL_EXPECTED_TESTS)\n"
-
+        echo -e "${GREEN}[PASS]${NC} $description"
         TESTS_PASSED=$((TESTS_PASSED+1))
-        if [ "$VERBOSE" = true ]; then
-            echo -e "--- Test Output ---" >>"$LOG_FILE"
-            echo "Test passed: $description" >>"$LOG_FILE"
-            echo "\$ $command" >>"$LOG_FILE"
-            echo "$output" >>"$LOG_FILE"
-            echo "-------------------" >>"$LOG_FILE"
-        fi
+        return 0
     fi
 }
 
-# --- Start service and capture token ---
+# --- Funzione per avviare il servizio e catturare il token ---
 start_service_and_get_token() {
     local script="$1"
     local backend="$2"
+
     ROOT_TOKEN=""
 
+    local description="Start $backend e cattura token"
     local command="$script start --backend $backend -c"
+
     if ! output=$(eval "$command" 2>&1); then
-        printf "\r[${RED}CRIT${NC}] Failed to start $backend service\n"
+        echo -e "${RED}Errore critico nello start del servizio $backend. Uscita.${NC}"
         echo "$output" >>"$LOG_FILE"
         exit 1
     fi
 
     ROOT_TOKEN_FILE=$(echo "$output" | grep 'Root Token:' | awk '{print $NF}' | tr -d '()')
+
     if [ -n "$ROOT_TOKEN_FILE" ] && [ -f "$ROOT_TOKEN_FILE" ]; then
         ROOT_TOKEN=$(cat "$ROOT_TOKEN_FILE")
     fi
 
     if [ -z "$ROOT_TOKEN" ]; then
-        printf "\r[${RED}CRIT${NC}] Unable to extract root token from $backend\n"
-        echo "Full script output:" >>"$LOG_FILE"
+        echo -e "${RED}Impossibile estrarre il token di root dall'output di $backend.${NC}"
+        echo -e "L'output completo dello script era:" >>"$LOG_FILE"
         echo "$output" >>"$LOG_FILE"
         return 1
     fi
+
+    return 0
 }
 
 # --- Functional Tests ---
@@ -138,152 +106,167 @@ run_functional_tests() {
     local PORT=$3
     local TOKEN=$ROOT_TOKEN
 
+    echo -e "\n${YELLOW}--- Funzionali ---${NC}"
+
     if [ -z "$TOKEN" ]; then
-        run_test "Verify token availability" "echo 'Root token not available. Cannot proceed.' && false"
+        run_test "Verifica token" "echo 'Token non disponibile. Impossibile proseguire con i test funzionali.' && false"
         return 1
     fi
 
     local PROTOCOL="http"
     local INSECURE_FLAG=""
-    [ "$BACKEND" = "openbao" ] && PROTOCOL="https" && INSECURE_FLAG="-k"
+    if [ "$BACKEND" = "openbao" ]; then
+        PROTOCOL="https"
+        INSECURE_FLAG="-k"
+    fi
 
     local BASE_URL="$PROTOCOL://127.0.0.1:$PORT/v1/secret/data/test-secret"
-    local CURL="curl -s $INSECURE_FLAG -H 'X-Vault-Token: $TOKEN'"
+    local CURL_COMMAND_PREFIX="curl -s $INSECURE_FLAG -H 'X-Vault-Token: $TOKEN'"
 
-    run_test "Write secret" "$CURL -X POST -d '{\"data\":{\"value\":\"test_value\"}}' $BASE_URL"
-    run_test "Read secret" "$CURL $BASE_URL | grep '\"value\":\"test_value\"'"
-    run_test "Delete secret" "$CURL -X DELETE $BASE_URL"
+    run_test "Scrivi segreto (backend: $BACKEND)" "$CURL_COMMAND_PREFIX -X POST -d '{\"data\":{\"value\":\"test_value\"}}' $BASE_URL"
+
+    run_test "Leggi segreto e verifica (backend: $BACKEND)" "$CURL_COMMAND_PREFIX $BASE_URL | grep '\"value\":\"test_value\"'"
+
+    run_test "Elimina segreto (backend: $BACKEND)" "$CURL_COMMAND_PREFIX -X DELETE $BASE_URL"
 }
 
-# --- Advanced Tests ---
-run_advanced_tests() {
-    local SCRIPT=$1
-    local BACKEND=$2
-    local PORT=$3
-    local TOKEN=$ROOT_TOKEN
-
-    if [ -z "$TOKEN" ]; then
-        run_test "Verify token availability (advanced)" "echo 'Root token not available. Cannot execute advanced tests.' && false"
-        return 1
-    fi
-
-    local PROTOCOL="http"
-    local INSECURE_FLAG=""
-    [ "$BACKEND" = "openbao" ] && PROTOCOL="https" && INSECURE_FLAG="-k"
-
-    local BASE="$PROTOCOL://127.0.0.1:$PORT/v1"
-    local CURL="curl -s $INSECURE_FLAG -H 'X-Vault-Token: $TOKEN'"
-
-    # KV Versioning
-    run_test "KV: Write v1" "$CURL -X POST -d '{\"data\":{\"value\":\"v1\"}}' $BASE/secret/data/test-adv"
-    run_test "KV: Write v2" "$CURL -X POST -d '{\"data\":{\"value\":\"v2\"}}' $BASE/secret/data/test-adv"
-    run_test "KV: Read v1" "$CURL \"$BASE/secret/data/test-adv?version=1\" | grep '\"value\":\"v1\"'"
-
-    # Token revoke
-    run_test "Revoke token" "$CURL -X POST $BASE/auth/token/revoke-self"
-    run_test "Access denied after revoke" "curl -s $INSECURE_FLAG -H 'X-Vault-Token: $TOKEN' $BASE/secret/data/test-adv | grep 'permission denied' || true"
-
-    # Restart to get new token
-    start_service_and_get_token "$SCRIPT" "$BACKEND"
-    TOKEN=$ROOT_TOKEN
-    CURL="curl -s $INSECURE_FLAG -H 'X-Vault-Token: $TOKEN'"
-
-    # Transit
-    run_test "Enable Transit" "$CURL -X POST $BASE/sys/mounts/transit -d '{\"type\":\"transit\"}'"
-    run_test "Create Transit key" "$CURL -X POST $BASE/transit/keys/testkey"
-    run_test "Encrypt with Transit" "$CURL -X POST $BASE/transit/encrypt/testkey -d '{\"plaintext\":\"$(echo -n testdata | base64)\"}' | grep 'ciphertext'"
-
-    # Negative
-    run_test "Invalid token" "curl -s $INSECURE_FLAG -H 'X-Vault-Token: invalid' $BASE/secret/data/test-adv | grep 'permission denied' || true"
-    run_test "Non-existing secret" "$CURL $BASE/secret/data/does-not-exist | grep '404' || true"
-
-    # Seal test (Vault only)
-    if [[ "$BACKEND" =~ file|consul ]]; then
-        run_test "Force Seal" "$CURL -X POST $BASE/sys/seal"
-        run_test "Check sealed" "$SCRIPT status | grep 'Sealed' || true"
-        run_test "Unseal Vault" "$SCRIPT unseal -c"
-    fi
-}
-
-# --- Vault Tests ---
+# --- Vault Tests (File Backend) ---
 test_vault_file_backend() {
-    echo -e "\n${CYAN}=== Vault Test (File Backend) ===${NC}"
+    local BACKEND="file"
+    echo -e "\n${CYAN}=== Vault Test (Backend: $BACKEND) ===${NC}"
+    echo -e "\n${YELLOW}--- Infrastrutturali ---${NC}"
     run_test "Vault help" "$VAULT_SCRIPT --help"
-    start_service_and_get_token "$VAULT_SCRIPT" "file"
-    run_test "Status after start" "$VAULT_SCRIPT status"
-    run_functional_tests "$VAULT_SCRIPT" "file" "8200"
-    run_test "Restart" "$VAULT_SCRIPT restart"
-    run_test "Status after restart" "$VAULT_SCRIPT status"
-    run_test "Reset" "$VAULT_SCRIPT reset"
-    run_test "Status after reset" "$VAULT_SCRIPT status"
-    run_test "Cleanup" "$VAULT_SCRIPT cleanup"
-    run_test "Verify stopped" "$VAULT_SCRIPT status || true"
+    start_service_and_get_token "$VAULT_SCRIPT" "$BACKEND"
+    run_test "Vault status after start ($BACKEND)" "$VAULT_SCRIPT status"
+    run_functional_tests "$VAULT_SCRIPT" "$BACKEND" "8200"
+    run_test "Vault restart ($BACKEND)" "$VAULT_SCRIPT restart"
+    run_test "Vault status after restart ($BACKEND)" "$VAULT_SCRIPT status"
+    run_test "Vault reset ($BACKEND)" "$VAULT_SCRIPT reset"
+    run_test "Vault status after reset ($BACKEND)" "$VAULT_SCRIPT status"
+    run_test "Vault cleanup ($BACKEND)" "$VAULT_SCRIPT cleanup"
+    run_test "Vault verify stopped ($BACKEND)" "$VAULT_SCRIPT status || true"
 }
 
+# --- Vault Tests (Consul Backend) ---
 test_vault_consul_backend() {
-    echo -e "\n${CYAN}=== Vault Test (Consul Backend) ===${NC}"
-    start_service_and_get_token "$VAULT_SCRIPT" "consul"
-    run_test "Status after start" "$VAULT_SCRIPT status"
-    run_functional_tests "$VAULT_SCRIPT" "consul" "8200"
-    run_test "Cleanup" "$VAULT_SCRIPT cleanup"
-    run_test "Verify stopped" "$VAULT_SCRIPT status || true"
+    local BACKEND="consul"
+    echo -e "\n${CYAN}=== Vault Test (Backend: $BACKEND) ===${NC}"
+    echo -e "\n${YELLOW}--- Infrastrutturali ---${NC}"
+    start_service_and_get_token "$VAULT_SCRIPT" "$BACKEND"
+    run_test "Vault status after start ($BACKEND)" "$VAULT_SCRIPT status"
+    run_functional_tests "$VAULT_SCRIPT" "$BACKEND" "8200"
+    run_test "Vault cleanup ($BACKEND)" "$VAULT_SCRIPT cleanup"
+    run_test "Vault verify stopped ($BACKEND)" "$VAULT_SCRIPT status || true"
 }
 
+# --- OpenBao Tests ---
 test_bao() {
+    local BACKEND="openbao"
     echo -e "\n${CYAN}=== OpenBao Test ===${NC}"
-    run_test "Bao help" "$BAO_SCRIPT --help"
-    start_service_and_get_token "$BAO_SCRIPT" "openbao"
-    run_test "Status after start" "$BAO_SCRIPT status"
-    run_functional_tests "$BAO_SCRIPT" "openbao" "8200"
-    run_test "Restart" "$BAO_SCRIPT restart"
-    run_test "Status after restart" "$BAO_SCRIPT status"
-    run_test "Reset" "$BAO_SCRIPT reset"
-    run_test "Status after reset" "$BAO_SCRIPT status"
-    run_test "Cleanup" "$BAO_SCRIPT cleanup"
-    run_test "Verify stopped" "$BAO_SCRIPT status || true"
+    echo -e "\n${YELLOW}--- Infrastrutturali ---${NC}"
+    run_test "OpenBao help" "$BAO_SCRIPT --help"
+    start_service_and_get_token "$BAO_SCRIPT" "$BACKEND"
+    run_test "OpenBao status after start" "$BAO_SCRIPT status"
+    run_functional_tests "$BAO_SCRIPT" "$BACKEND" "8200"
+    run_test "OpenBao restart" "$BAO_SCRIPT restart"
+    run_test "OpenBao status after restart" "$BAO_SCRIPT status"
+    run_test "OpenBao reset" "$BAO_SCRIPT reset"
+    run_test "OpenBao status after reset" "$BAO_SCRIPT status"
+    run_test "OpenBao cleanup" "$BAO_SCRIPT cleanup"
+    run_test "OpenBao verify stopped ($BACKEND)" "$BAO_SCRIPT status || true"
 }
 
-# --- Pre-calculate total tests ---
-estimate_tests() {
-    TOTAL_EXPECTED_TESTS=0
-    case "$TEST_SCOPE" in
-        all)
-            TOTAL_EXPECTED_TESTS=$((TOTAL_EXPECTED_TESTS+9+3))    # Vault file (infra+func)
-            TOTAL_EXPECTED_TESTS=$((TOTAL_EXPECTED_TESTS+2+3))    # Vault consul
-            TOTAL_EXPECTED_TESTS=$((TOTAL_EXPECTED_TESTS+9+3))    # Bao
-            TOTAL_EXPECTED_TESTS=$((TOTAL_EXPECTED_TESTS+11))     # Advanced Vault file
-            TOTAL_EXPECTED_TESTS=$((TOTAL_EXPECTED_TESTS+11))     # Advanced Vault consul
-            TOTAL_EXPECTED_TESTS=$((TOTAL_EXPECTED_TESTS+11))     # Advanced Bao
-            ;;
-        vault)
-            TOTAL_EXPECTED_TESTS=$((TOTAL_EXPECTED_TESTS+9+3))    # Vault file
-            TOTAL_EXPECTED_TESTS=$((TOTAL_EXPECTED_TESTS+2+3))    # Vault consul
-            ;;
-        bao)
-            TOTAL_EXPECTED_TESTS=$((TOTAL_EXPECTED_TESTS+9+3))    # Bao
-            ;;
-        advanced)
-            TOTAL_EXPECTED_TESTS=$((TOTAL_EXPECTED_TESTS+9+3+11)) # Vault file + advanced
-            TOTAL_EXPECTED_TESTS=$((TOTAL_EXPECTED_TESTS+9+3+11)) # Bao + advanced
-            ;;
-    esac
+# --- Advanced Vault Tests (AppRole) ---
+test_advanced_vault() {
+    echo -e "\n${CYAN}=== Vault Advanced Tests (AppRole) ===${NC}"
+
+    # 1. Start Vault (file backend) for the advanced tests
+    start_service_and_get_token "$VAULT_SCRIPT" "file"
+    if [ -z "$ROOT_TOKEN" ]; then
+        echo -e "${RED}Impossibile avviare Vault per i test avanzati. Uscita.${NC}"
+        exit 1
+    fi
+
+    local PORT="8200"
+    local PROTOCOL="http"
+    local VAULT_ADDR="$PROTOCOL://127.0.0.1:$PORT"
+    local CURL_ROOT="curl -s -H 'X-Vault-Token: $ROOT_TOKEN'"
+
+    echo -e "\n${YELLOW}--- Test AppRole ---${NC}"
+
+    run_test "Abilita AppRole" "$CURL_ROOT -X POST -d '{\"type\":\"approle\"}' $VAULT_ADDR/v1/sys/auth/approle"
+
+    run_test "Crea policy 'test-approle-policy'" "$CURL_ROOT -X POST -d '{\"policy\":\"path \\\"secret/*\\\" {capabilities = [\\\"read\\\"]}\"}' $VAULT_ADDR/v1/sys/policy/test-approle-policy"
+
+    run_test "Crea AppRole 'test-approle'" "$CURL_ROOT -X POST -d '{\"policies\":[\"test-approle-policy\"]}' $VAULT_ADDR/v1/auth/approle/role/test-approle"
+
+    # d. Ottieni il Role ID
+    local ROLE_ID=""
+    # --- AGGIUNGI QUI QUESTA RIGA PER DEBUGGARE ---
+    log_info "DEBUG: Output raw del Role ID: $($CURL_ROOT $VAULT_ADDR/v1/auth/approle/role/test-approle/role-id)"
+    # ----------------------------------------------
+    ROLE_ID=$($CURL_ROOT $VAULT_ADDR/v1/auth/approle/role/test-approle/role-id | jq -r '.data.role_id')
+    if [ -z "$ROLE_ID" ] || [ "$ROLE_ID" == "null" ]; then
+        echo -e "${RED}Impossibile ottenere il Role ID (valore nullo). Uscita dai test avanzati.${NC}"
+        exit 1
+    fi
+    run_test "Verifica Role ID" "echo \"Role ID è: $ROLE_ID\""
+
+    local SECRET_ID=""
+    SECRET_ID=$($CURL_ROOT -X POST $VAULT_ADDR/v1/auth/approle/role/test-approle/secret-id | jq -r '.data.secret_id')
+    if [ -z "$SECRET_ID" ] || [ "$SECRET_ID" == "null" ]; then
+        echo -e "${RED}Impossibile ottenere il Secret ID (valore nullo). Uscita dai test avanzati.${NC}"
+        exit 1
+    fi
+    run_test "Verifica Secret ID" "echo \"Secret ID è: $SECRET_ID\""
+
+    local APP_TOKEN=""
+    local LOGIN_PAYLOAD="{\"role_id\":\"$ROLE_ID\",\"secret_id\":\"$SECRET_ID\"}"
+    APP_TOKEN=$($CURL_ROOT -X POST -d "$LOGIN_PAYLOAD" $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token')
+    if [ -z "$APP_TOKEN" ] || [ "$APP_TOKEN" == "null" ]; then
+        echo -e "${RED}Login con AppRole fallito. Uscita dai test avanzati.${NC}"
+        exit 1
+    fi
+    run_test "Verifica token AppRole" "echo \"Token AppRole è: $APP_TOKEN\""
+
+    echo -e "\n${YELLOW}--- Test funzionalità con token AppRole ---${NC}"
+    local CURL_APP="curl -s -H 'X-Vault-Token: $APP_TOKEN'"
+
+    # g. Verifica che il token AppRole ha solo permessi di lettura
+    local output_app_token=""
+    run_test "Scrivi segreto (dovrebbe fallire)" "output_app_token=$($CURL_APP -X POST -d '{\"data\":{\"value\":\"test_value_app\"}}' $VAULT_ADDR/v1/secret/data/test-secret-app 2>&1 | grep 'permission denied' | wc -l)"
+
+    if [[ "$(eval echo "$output_app_token")" -eq 1 ]]; then
+        echo -e "${GREEN}[PASS] Scrivi segreto (come atteso, permesso negato)${NC}"
+        TESTS_PASSED=$((TESTS_PASSED+1))
+    else
+        echo -e "${RED}[FAIL] Scrivi segreto (il comando avrebbe dovuto fallire, ma è riuscito)${NC}"
+        TESTS_FAILED=$((TESTS_FAILED+1))
+    fi
+    TESTS_TOTAL=$((TESTS_TOTAL+1))
+
+    run_test "Leggi segreto con AppRole" "$CURL_APP $VAULT_ADDR/v1/secret/data/test-secret | grep '\"data\"'"
+
+    echo -e "\n${YELLOW}--- Pulizia dei test avanzati ---${NC}"
+
+    # i. Disabilita il metodo di autenticazione AppRole
+    run_test "Disabilita AppRole" "$CURL_ROOT -X DELETE $VAULT_ADDR/v1/sys/auth/approle"
+
+    # j. Elimina la policy
+    run_test "Elimina policy 'test-approle-policy'" "$CURL_ROOT -X DELETE $VAULT_ADDR/v1/sys/policy/test-approle-policy"
+
+    # k. Pulizia finale
+    run_test "Vault cleanup (avanzato)" "$VAULT_SCRIPT cleanup --backend file"
 }
 
-estimate_tests
-
-# --- Run tests ---
-echo -e "${CYAN}=== Vault & OpenBao Lab Smoke Test ===${NC}"
-echo "Test started at: $(date)"
-echo "Expected tests: $TOTAL_EXPECTED_TESTS"
-
+# === Gestione dei parametri in ingresso ===
+TEST_SCOPE="${1:-all}"
 case "$TEST_SCOPE" in
     all)
         test_vault_file_backend
-        run_advanced_tests "$VAULT_SCRIPT" "file" "8200"
         test_vault_consul_backend
-        run_advanced_tests "$VAULT_SCRIPT" "consul" "8200"
         test_bao
-        run_advanced_tests "$BAO_SCRIPT" "openbao" "8200"
+        test_advanced_vault
         ;;
     vault)
         test_vault_file_backend
@@ -293,34 +276,24 @@ case "$TEST_SCOPE" in
         test_bao
         ;;
     advanced)
-        test_vault_file_backend
-        run_advanced_tests "$VAULT_SCRIPT" "file" "8200"
-        test_bao
-        run_advanced_tests "$BAO_SCRIPT" "openbao" "8200"
+        test_advanced_vault
         ;;
     *)
-        echo -e "${RED}Error: Invalid parameter. Usage: $0 [all|vault|bao|advanced] [-v|--verbose]${NC}"
+        echo -e "${RED}Errore: Parametro non valido. Uso: $0 [all|vault|bao|advanced]${NC}"
         exit 1
         ;;
 esac
-
-# --- Timer end ---
-END_TIME=$(date +%s)
-DURATION=$((END_TIME - START_TIME))
-MINUTES=$((DURATION / 60))
-SECONDS=$((DURATION % 60))
 
 # --- Summary ---
 echo -e "\n${CYAN}=== Smoke Test Summary ===${NC}"
 echo -e "Total tests:   ${CYAN}$TESTS_TOTAL${NC}"
 echo -e "Passed:        ${GREEN}$TESTS_PASSED${NC}"
 echo -e "Failed:        ${RED}$TESTS_FAILED${NC}"
-echo -e "Duration:      ${YELLOW}${MINUTES}m ${SECONDS}s${NC}"
 
 if [ "$TESTS_FAILED" -eq 0 ]; then
-    echo -e "\n${GREEN}✅ All tests passed successfully!${NC}"
+    echo -e "\n${GREEN}✅ Tutti i test sono passati con successo!${NC}"
     rm -f "$LOG_FILE"
 else
-    echo -e "\n${RED}❌ Some tests failed. Check $LOG_FILE for details.${NC}"
+    echo -e "\n${RED}❌ Alcuni test sono falliti. Controlla $LOG_FILE per i dettagli.${NC}"
     exit 1
 fi
