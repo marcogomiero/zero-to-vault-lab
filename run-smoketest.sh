@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+set -uo pipefail
 
 # ==========================================
 # Vault & OpenBao Lab Smoke Test Script
