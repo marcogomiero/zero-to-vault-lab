@@ -54,44 +54,22 @@ display_help() {
     echo "This script deploys a HashiCorp Vault lab environment."
     echo ""
     echo "Options:"
-    echo "  -c, --clean        Forces a clean setup, removing any existing Vault data"
-    echo "                     in '$VAULT_DIR' and Consul data in '$CONSUL_DIR' before starting."
-    echo "  -h, --help         Display this help message and exit."
-    echo "  -v, --verbose      Enable verbose output for troubleshooting (currently not fully implemented)."
-    echo "  --no-color         Disable colored output, useful for logging or non-interactive environments."
-    echo "  --backend <type>   Choose Vault storage backend: 'file' (default) or 'consul'."
-    echo "                     This option takes precedence over the saved configuration."
-    echo "                     If not specified for 'start' command, the script will prompt you interactively."
-    echo "  -b, --base-directory <path>"
-    echo "                     Specify the base directory for the Vault lab. Default: $BASE_DIR"
+    echo "  -c, --clean        Forces a clean setup, removing any existing Vault/Consul data."
+    echo "  -h, --help         Display this help message."
+    echo "  -v, --verbose      Enable verbose output."
+    echo "  --no-color         Disable colored output."
+    echo "  --backend <type>   Choose backend: 'file' or 'consul'."
+    echo "  -b, --base-directory <path>  Set base directory."
     echo ""
     echo "Commands:"
-    echo "  start              (Default) Configures and starts the Vault lab."
-    echo "  stop               Stops the running Vault and Consul (if applicable) servers."
-    echo "  restart            Stops and then starts the Vault and Consul (if applicable) servers."
-    echo "  status             Checks and displays the current status of the Vault and Consul (if applicable) servers."
-    echo "  cleanup            Removes all Vault and Consul (if applicable) lab data and stops any running instances."
+    echo "  start              (Default) Setup and start the Vault lab."
+    echo "  stop               Stop Vault and Consul."
+    echo "  restart            Restart Vault (and Consul if applicable) and unseal it, without reconfiguring."
+    echo "  reset              Fully resets the lab (cleanup + fresh start)."
+    echo "  status             Show status."
+    echo "  cleanup            Remove all lab data and stop running instances."
     echo ""
-    echo "Default Behavior (no options/commands):"
-    echo "  The script will run the 'start' command."
-    echo ""
-    echo "Persistence:"
-    echo "  The chosen backend type ('file' or 'consul') is saved in '$LAB_CONFIG_FILE'"
-    echo "  after a successful 'start' command. Subsequent 'stop', 'restart', 'status',"
-    echo "  and 'cleanup' commands will automatically use this saved backend type"
-    echo "  unless explicitly overridden with the '--backend' option."
-    echo ""
-    echo "Examples:"
-    echo "  $0"
-    echo "  $0 --clean"
-    echo "  $0 --backend consul"
-    echo "  $0 stop             # Will use the backend saved in '$LAB_CONFIG_FILE'"
-    echo "  $0 cleanup --backend file # Force cleanup for file backend, even if consul was saved"
-    echo "  $0 status"
-    echo "  $0 restart"
-    echo "  $0 start --clean --backend file -b /tmp/my-vault-lab"
-    echo ""
-    exit 0 # Exit after displaying help
+    exit 0
 }
 
 # --- Function: Save backend type to config file ---
@@ -1364,30 +1342,59 @@ start_lab_environment_core() {
     display_final_info
 }
 
+# --- Funzione restart aggiornata ---
+restart_lab_environment() {
+    log_info "\n=================================================="
+    log_info "RESTARTING VAULT LAB ENVIRONMENT (Backend: $BACKEND_TYPE)"
+    log_info "=================================================="
 
-# --- Main Script Execution Logic ---
-main() {
-    # Determine if colors should be enabled by default (if stdout is a TTY)
-    if [ ! -t 1 ]; then # If stdout is NOT a TTY (e.g., redirected to a file or pipe)
-        COLORS_ENABLED=false
+    stop_lab_environment
+    log_info "Waiting briefly before restarting services..."
+    sleep 3
+
+    if [ "$BACKEND_TYPE" == "consul" ]; then
+        log_info "Restarting Consul..."
+        configure_and_start_consul
     fi
 
-    local command="start" # Default command
-    local temp_base_dir="" # Temporary variable for parsing --base-directory
-    local original_args=("$@") # Store original arguments to re-pass to 'start' during restart
+    log_info "Restarting Vault..."
+    local vault_exe="$BIN_DIR/vault"
+    if [[ "$(uname -s)" == *"MINGW"* ]]; then
+        vault_exe="$BIN_DIR/vault.exe"
+    fi
+    "$vault_exe" server -config="$VAULT_DIR/config.hcl" > "$VAULT_DIR/vault.log" 2>&1 &
+    echo $! > "$LAB_VAULT_PID_FILE"
+    wait_for_vault_up "$VAULT_ADDR"
 
-    # Load backend type from config file first (if it exists)
+    initialize_and_unseal_vault
+    log_info "Vault lab environment restarted and unsealed. 🔄"
+}
+
+# --- Funzione reset ---
+reset_lab_environment() {
+    log_info "\n=================================================="
+    log_info "RESETTING VAULT LAB ENVIRONMENT (Backend: $BACKEND_TYPE)"
+    log_info "=================================================="
+    cleanup_previous_environment
+    start_lab_environment_core
+}
+
+# --- Main ---
+main() {
+    if [ ! -t 1 ]; then COLORS_ENABLED=false; fi
+
+    local command="start"
+    local temp_base_dir=""
+    local original_args=("$@")
+
     load_backend_type_from_config
 
-    # Parse options and command
     local i=1
     while [[ $i -le ${#original_args[@]} ]]; do
-        local arg="${original_args[$((i-1))]}" # Bash arrays are 0-indexed
-
+        local arg="${original_args[$((i-1))]}"
         case "$arg" in
             -h|--help)
                 display_help
-                exit 0 # Exit after displaying help
                 ;;
             -c|--clean)
                 FORCE_CLEANUP_ON_START=true
@@ -1402,7 +1409,7 @@ main() {
                 if [[ -n "${original_args[$i]}" && ("${original_args[$i]}" == "file" || "${original_args[$i]}" == "consul") ]]; then
                     BACKEND_TYPE="${original_args[$i]}"
                     BACKEND_TYPE_SET_VIA_ARG=true
-                    i=$((i+1)) # Consume the backend type argument
+                    i=$((i+1))
                 else
                     log_error "Error: --backend requires 'file' or 'consul' as an argument."
                 fi
@@ -1410,24 +1417,18 @@ main() {
             -b|--base-directory)
                 if [[ -n "${original_args[$i]}" ]]; then
                     temp_base_dir="${original_args[$i]}"
-                    i=$((i+1)) # Consume the path argument
+                    i=$((i+1))
                 else
                     log_error "Error: --base-directory requires a path as an argument."
                 fi
                 ;;
-            start|stop|restart|status|cleanup)
-                command="$arg" # Capture the command
-                ;;
-            *)
-                # If it's not a known option or command, it's an unknown argument
-                # This simple parser assumes commands/options are at the beginning.
-                # For more complex parsing (e.g., options after commands), a different approach is needed.
+            start|stop|restart|reset|status|cleanup)
+                command="$arg"
                 ;;
         esac
         i=$((i+1))
     done
 
-    # Set BASE_DIR if provided, and then derive other paths
     if [ -n "$temp_base_dir" ]; then
         BASE_DIR="$temp_base_dir"
         BIN_DIR="$BASE_DIR/bin"
@@ -1435,47 +1436,25 @@ main() {
         CONSUL_DIR="$BASE_DIR/consul-lab"
         LAB_VAULT_PID_FILE="$VAULT_DIR/vault.pid"
         LAB_CONSUL_PID_FILE="$CONSUL_DIR/consul.pid"
-        LAB_CONFIG_FILE="$VAULT_DIR/vault-lab-ctl.conf" # Update config file path too
+        LAB_CONFIG_FILE="$VAULT_DIR/vault-lab-ctl.conf"
     fi
 
-    # Apply color disabling *after* parsing options and TTY check
-    if [ "$COLORS_ENABLED" = false ]; then
-        GREEN=''
-        YELLOW=''
-        RED=''
-        NC=''
-    fi
+    if [ "$COLORS_ENABLED" = false ]; then GREEN=''; YELLOW=''; RED=''; NC=''; fi
 
-    # Execute the chosen command
     case "$command" in
         start)
-            # Interactive prompt for backend type if not set via argument and no config was loaded
-            if [ "$BACKEND_TYPE_SET_VIA_ARG" = false ] && [ "$BACKEND_TYPE" == "file" ]; then # Only prompt if not set by arg AND still default 'file'
-                echo -e "\n${YELLOW}Choose Vault storage backend (file/consul, default: file): ${NC}"
-                read -p "Type 'file' or 'consul': " user_backend_choice
-                case "$user_backend_choice" in
-                    consul|CONSUL )
-                        BACKEND_TYPE="consul"
-                        ;;
-                    file|FILE|"" ) # Empty input defaults to file
-                        BACKEND_TYPE="file"
-                        ;;
-                    * )
-                        log_warn "Invalid backend choice '$user_backend_choice'. Defaulting to 'file'."
-                        BACKEND_TYPE="file"
-                        ;;
-                esac
-                log_info "Selected backend: $BACKEND_TYPE"
-            fi
             check_and_install_prerequisites
-            handle_existing_lab # This will call cleanup_previous_environment if --clean is set, or re-use
-            start_lab_environment_core # Call the core start logic
+            handle_existing_lab
+            start_lab_environment_core
             ;;
         stop)
             stop_lab_environment
             ;;
         restart)
             restart_lab_environment
+            ;;
+        reset)
+            reset_lab_environment
             ;;
         status)
             check_lab_status
@@ -1489,5 +1468,4 @@ main() {
     esac
 }
 
-# Execute the main function
 main "$@"
