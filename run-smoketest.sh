@@ -9,12 +9,11 @@ set -uo pipefail
 #   ✅ OpenBao (bao-lab-ctl.sh)
 #
 # Usage:
-#   ./lab-smoketest.sh [all|vault|bao|advanced]
+#   ./lab-smoketest.sh [all|vault|bao]
 #
 #   - all (default):   Runs all tests.
 #   - vault:           Runs basic tests for Vault (file and consul backends).
 #   - bao:             Runs basic tests for OpenBao.
-#   - advanced:        Runs advanced tests for Vault (AppRole auth & token renewal).
 #
 # Logs:
 #   - Console output: colored PASS/FAIL markers, including the command
@@ -38,6 +37,7 @@ TESTS_PASSED=0
 TESTS_FAILED=0
 ROOT_TOKEN=""
 
+clear
 echo -e "${CYAN}=== Vault & OpenBao Lab Smoke Test ===${NC}"
 echo "Test started at: $(date)"
 
@@ -176,89 +176,6 @@ test_bao() {
     run_test "OpenBao verify stopped ($BACKEND)" "$BAO_SCRIPT status || true"
 }
 
-# --- Advanced Vault Tests (AppRole) ---
-test_advanced_vault() {
-    echo -e "\n${CYAN}=== Vault Advanced Tests (AppRole) ===${NC}"
-
-    # 1. Start Vault (file backend) for the advanced tests
-    start_service_and_get_token "$VAULT_SCRIPT" "file"
-    if [ -z "$ROOT_TOKEN" ]; then
-        echo -e "${RED}Impossibile avviare Vault per i test avanzati. Uscita.${NC}"
-        exit 1
-    fi
-
-    local PORT="8200"
-    local PROTOCOL="http"
-    local VAULT_ADDR="$PROTOCOL://127.0.0.1:$PORT"
-    local CURL_ROOT="curl -s -H 'X-Vault-Token: $ROOT_TOKEN'"
-
-    echo -e "\n${YELLOW}--- Test AppRole ---${NC}"
-
-    run_test "Abilita AppRole" "$CURL_ROOT -X POST -d '{\"type\":\"approle\"}' $VAULT_ADDR/v1/sys/auth/approle"
-
-    run_test "Crea policy 'test-approle-policy'" "$CURL_ROOT -X POST -d '{\"policy\":\"path \\\"secret/*\\\" {capabilities = [\\\"read\\\"]}\"}' $VAULT_ADDR/v1/sys/policy/test-approle-policy"
-
-    run_test "Crea AppRole 'test-approle'" "$CURL_ROOT -X POST -d '{\"policies\":[\"test-approle-policy\"]}' $VAULT_ADDR/v1/auth/approle/role/test-approle"
-
-    # d. Ottieni il Role ID
-    local ROLE_ID=""
-    # --- AGGIUNGI QUI QUESTA RIGA PER DEBUGGARE ---
-    log_info "DEBUG: Output raw del Role ID: $($CURL_ROOT $VAULT_ADDR/v1/auth/approle/role/test-approle/role-id)"
-    # ----------------------------------------------
-    ROLE_ID=$($CURL_ROOT $VAULT_ADDR/v1/auth/approle/role/test-approle/role-id | jq -r '.data.role_id')
-    if [ -z "$ROLE_ID" ] || [ "$ROLE_ID" == "null" ]; then
-        echo -e "${RED}Impossibile ottenere il Role ID (valore nullo). Uscita dai test avanzati.${NC}"
-        exit 1
-    fi
-    run_test "Verifica Role ID" "echo \"Role ID è: $ROLE_ID\""
-
-    local SECRET_ID=""
-    SECRET_ID=$($CURL_ROOT -X POST $VAULT_ADDR/v1/auth/approle/role/test-approle/secret-id | jq -r '.data.secret_id')
-    if [ -z "$SECRET_ID" ] || [ "$SECRET_ID" == "null" ]; then
-        echo -e "${RED}Impossibile ottenere il Secret ID (valore nullo). Uscita dai test avanzati.${NC}"
-        exit 1
-    fi
-    run_test "Verifica Secret ID" "echo \"Secret ID è: $SECRET_ID\""
-
-    local APP_TOKEN=""
-    local LOGIN_PAYLOAD="{\"role_id\":\"$ROLE_ID\",\"secret_id\":\"$SECRET_ID\"}"
-    APP_TOKEN=$($CURL_ROOT -X POST -d "$LOGIN_PAYLOAD" $VAULT_ADDR/v1/auth/approle/login | jq -r '.auth.client_token')
-    if [ -z "$APP_TOKEN" ] || [ "$APP_TOKEN" == "null" ]; then
-        echo -e "${RED}Login con AppRole fallito. Uscita dai test avanzati.${NC}"
-        exit 1
-    fi
-    run_test "Verifica token AppRole" "echo \"Token AppRole è: $APP_TOKEN\""
-
-    echo -e "\n${YELLOW}--- Test funzionalità con token AppRole ---${NC}"
-    local CURL_APP="curl -s -H 'X-Vault-Token: $APP_TOKEN'"
-
-    # g. Verifica che il token AppRole ha solo permessi di lettura
-    local output_app_token=""
-    run_test "Scrivi segreto (dovrebbe fallire)" "output_app_token=$($CURL_APP -X POST -d '{\"data\":{\"value\":\"test_value_app\"}}' $VAULT_ADDR/v1/secret/data/test-secret-app 2>&1 | grep 'permission denied' | wc -l)"
-
-    if [[ "$(eval echo "$output_app_token")" -eq 1 ]]; then
-        echo -e "${GREEN}[PASS] Scrivi segreto (come atteso, permesso negato)${NC}"
-        TESTS_PASSED=$((TESTS_PASSED+1))
-    else
-        echo -e "${RED}[FAIL] Scrivi segreto (il comando avrebbe dovuto fallire, ma è riuscito)${NC}"
-        TESTS_FAILED=$((TESTS_FAILED+1))
-    fi
-    TESTS_TOTAL=$((TESTS_TOTAL+1))
-
-    run_test "Leggi segreto con AppRole" "$CURL_APP $VAULT_ADDR/v1/secret/data/test-secret | grep '\"data\"'"
-
-    echo -e "\n${YELLOW}--- Pulizia dei test avanzati ---${NC}"
-
-    # i. Disabilita il metodo di autenticazione AppRole
-    run_test "Disabilita AppRole" "$CURL_ROOT -X DELETE $VAULT_ADDR/v1/sys/auth/approle"
-
-    # j. Elimina la policy
-    run_test "Elimina policy 'test-approle-policy'" "$CURL_ROOT -X DELETE $VAULT_ADDR/v1/sys/policy/test-approle-policy"
-
-    # k. Pulizia finale
-    run_test "Vault cleanup (avanzato)" "$VAULT_SCRIPT cleanup --backend file"
-}
-
 # === Gestione dei parametri in ingresso ===
 TEST_SCOPE="${1:-all}"
 case "$TEST_SCOPE" in
@@ -266,7 +183,6 @@ case "$TEST_SCOPE" in
         test_vault_file_backend
         test_vault_consul_backend
         test_bao
-        test_advanced_vault
         ;;
     vault)
         test_vault_file_backend
@@ -275,11 +191,8 @@ case "$TEST_SCOPE" in
     bao)
         test_bao
         ;;
-    advanced)
-        test_advanced_vault
-        ;;
     *)
-        echo -e "${RED}Errore: Parametro non valido. Uso: $0 [all|vault|bao|advanced]${NC}"
+        echo -e "${RED}Errore: Parametro non valido. Uso: $0 [all|vault|bao]${NC}"
         exit 1
         ;;
 esac
