@@ -1,4 +1,29 @@
 #!/bin/bash
+# A script to deploy a local HashiCorp Vault lab environment.
+#
+# This script is designed for educational and development purposes, providing a
+# simple way to set up, manage, and tear down a single-node Vault instance
+# with either a file-based or a Consul-based storage backend.
+#
+# It automates the following key tasks:
+# 1.  **Dependency Check**: Verifies that necessary command-line tools like `curl`, `jq`, `unzip`, `lsof`, and `terraform` are installed, and offers to install them automatically on supported systems (Linux with `apt-get`, `yum`, `dnf`, `pacman` or macOS with `brew`).
+# 2.  **Binary Management**: Automatically downloads and updates the latest non-enterprise versions of Vault and Consul binaries from HashiCorp's official release page.
+# 3.  **Lab Lifecycle Management**: Supports a full lifecycle for the lab environment, including `start`, `stop`, `restart`, `reset`, `cleanup`, and `status`.
+# 4.  **Backend Flexibility**: Allows the user to choose between `file` and `consul` as the storage backend for Vault. The choice is persisted to a configuration file for consistent use across commands.
+# 5.  **Configuration**: Automatically generates the necessary configuration files for both Vault and Consul.
+# 6.  **Initialization and Unsealing**: For new or reset labs, it initializes Vault and performs an automatic unseal using the `operator init` command with a single key share and threshold. It saves the root token and unseal key to local files for easy access.
+# 7.  **Feature Configuration**: Sets up common Vault features necessary for a lab, including:
+#     * Enabling KV v2 and PKI secrets engines.
+#     * Configuring an `approle` authentication method and an example role (`web-application`).
+#     * Creating an example `userpass` authentication method with a `devuser` and a `dev-policy`.
+#     * Enabling an audit device that writes to a specified path (defaulting to `/dev/null`).
+# 8.  **Status and Information Display**: Provides a clear and color-coded status of the running services and, upon successful setup, displays all relevant access details like URLs, tokens, and example CLI commands.
+# 9.  **Safety and Warnings**: Clearly warns the user that this setup is highly insecure for production and that sensitive information (tokens, keys) is stored in plain text.
+#
+# Usage:
+#   To start a new lab: `./vault-lab-ctl.sh start`
+#   To use Consul as the backend: `./vault-lab-ctl.sh --backend consul start`
+#   For more options: `./vault-lab-ctl.sh --help`
 
 # --- Global Configuration ---
 # Default base directory for the Vault lab. Can be overridden by --base-dir option.

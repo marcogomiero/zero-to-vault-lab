@@ -37,7 +37,6 @@ TESTS_PASSED=0
 TESTS_FAILED=0
 ROOT_TOKEN=""
 
-clear
 echo -e "${CYAN}=== Vault & OpenBao Lab Smoke Test ===${NC}"
 echo "Test started at: $(date)"
 
