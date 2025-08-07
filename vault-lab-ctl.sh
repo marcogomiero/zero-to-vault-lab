@@ -631,6 +631,8 @@ configure_and_start_consul() {
 
     local consul_port=$(echo "$CONSUL_ADDR" | cut -d':' -f3)
 
+    mkdir -p "$CONSUL_DIR" || log_error "Failed to create Consul directory. Check permissions."
+
     # Ensure Consul is not already running on the port by stopping it explicitly
     stop_consul
 
@@ -1174,110 +1176,89 @@ handle_existing_lab() {
     fi
 }
 
-# --- Function: Check and display lab status ---
+# --- Function: Check Lab Status ---
 check_lab_status() {
     log_info "\n=================================================="
     log_info "CHECKING VAULT LAB STATUS (Backend: $BACKEND_TYPE)"
     log_info "=================================================="
 
-    export VAULT_ADDR="$VAULT_ADDR" # Ensure VAULT_ADDR is set for status checks
+    local vault_pid=""
+    local vault_is_running=false
+    local consul_is_running=false
 
-    local vault_exe="$BIN_DIR/vault"
-    if [[ "$(uname -s)" == *"MINGW"* ]]; then
-        vault_exe="$BIN_DIR/vault.exe"
-    fi
-
-    if [ ! -f "$vault_exe" ]; then
-        log_warn "Vault binary not found at $vault_exe. Cannot check status. ⚠️"
-        return 1
-    fi
-
-    log_info "Attempting to get Vault server status..."
-    local vault_status_output=$(get_vault_status)
-    local vault_exit_code=$?
-
-    if [ $vault_exit_code -eq 0 ]; then
-        log_info "Vault server is running. Details:"
-        echo "$vault_status_output" | jq .
-        local initialized=$(echo "$vault_status_output" | jq -r '.initialized')
-        local sealed=$(echo "$vault_status_output" | jq -r '.sealed')
-        local active_node=$(echo "$vault_status_output" | jq -r '.active_node')
-        local cluster_name=$(echo "$vault_status_output" | jq -r '.cluster_name')
-
-        echo -e "\n${YELLOW}Vault Summary:${NC}"
-        echo -e "  Initialized: ${GREEN}$initialized${NC}"
-        echo -e "  Sealed:      ${GREEN}$sealed${NC}"
-        echo -e "  Active Node: ${GREEN}${active_node:-N/A}${NC}"
-        echo -e "  Cluster:     ${GREEN}${cluster_name:-N/A}${NC}"
-
-        if [ "$sealed" == "true" ]; then
-            log_warn "Vault is SEALED. You need to unseal it to use it. 🔓"
-        elif [ "$initialized" == "false" ]; then
-            log_warn "Vault is NOT INITIALIZED. You need to initialize it. ⚙️"
+    # Check Vault PID file and process
+    if [ -f "$LAB_VAULT_PID_FILE" ]; then
+        vault_pid=$(cat "$LAB_VAULT_PID_FILE")
+        if ps -p "$vault_pid" > /dev/null; then
+            vault_is_running=true
         else
-            log_info "Vault is UNSEALED and READY. 🎉"
+            log_warn "Vault PID file exists but process $vault_pid is not running. Cleaning up stale PID file. ⚠️"
+            rm -f "$LAB_VAULT_PID_FILE"
         fi
-    elif [ $vault_exit_code -eq 2 ]; then
-        log_warn "Vault server is SEALED or NOT INITIALIZED. Please run '$0 start' to initialize/unseal. 🔒"
+    fi
+
+    # Check Vault status based on running process
+    if [ "$vault_is_running" = true ]; then
+        log_info "Vault process (PID: $vault_pid) is running. Attempting to get Vault server status..."
+        local VAULT_STATUS_OUTPUT
+        if VAULT_STATUS_OUTPUT=$(get_vault_status_json); then
+            log_info "Vault server is running. Details:"
+            local vault_initialized=$(echo "$VAULT_STATUS_OUTPUT" | jq -r '.initialized')
+            local vault_sealed=$(echo "$VAULT_STATUS_OUTPUT" | jq -r '.sealed')
+            local vault_active_node=$(echo "$VAULT_STATUS_OUTPUT" | jq -r '.active_node')
+            local vault_cluster_name=$(echo "$VAULT_STATUS_OUTPUT" | jq -r '.cluster_name')
+
+            if [ "$vault_initialized" == "true" ] && [ "$vault_sealed" == "false" ]; then
+                echo "Vault Summary:"
+                echo "  Initialized: $vault_initialized"
+                echo "  Sealed:      $vault_sealed"
+                echo "  Active Node: $vault_active_node"
+                echo "  Cluster:     $vault_cluster_name"
+                log_info "Vault is UNSEALED and READY. 🎉"
+            elif [ "$vault_initialized" == "true" ] && [ "$vault_sealed" == "true" ]; then
+                log_warn "Vault is SEALED. 🔒"
+                log_warn "You can unseal it with the restart command: ${YELLOW}$0 restart${NC}"
+            else
+                log_warn "Vault is not initialized. 🚧"
+            fi
+        else
+            log_warn "Vault process is running but not responding to API calls. Check logs ($VAULT_DIR/vault.log) ⚠️"
+        fi
     else
-        log_warn "Vault server is NOT RUNNING or not reachable on $VAULT_ADDR. 🔴"
-        log_warn "Check if the process is running or if the port is open."
-        if [ -f "$LAB_VAULT_PID_FILE" ]; then
-            local pid=$(cat "$LAB_VAULT_PID_FILE")
-            if ps -p "$pid" > /dev/null; then
-                log_warn "A PID file exists ($LAB_VAULT_PID_FILE) indicating PID $pid, but the server is not responding."
-                log_warn "This might be a zombie process. Consider running '$0 stop' then '$0 cleanup'."
-            else
-                log_warn "PID file ($LAB_VAULT_PID_FILE) exists but no process with that PID ($pid) is running."
-                log_warn "The PID file might be stale. Consider running '$0 cleanup'."
-            fi
-        else
-            log_warn "No PID file found. Vault might not have been started or crashed unexpectedly."
-        fi
+        log_info "Vault server is not running. 🛑"
     fi
 
+    # Check Consul status if backend is consul
     if [ "$BACKEND_TYPE" == "consul" ]; then
-        log_info "\nAttempting to get Consul server status..."
-        export CONSUL_ADDR="$CONSUL_ADDR" # Ensure CONSUL_ADDR is set for status checks
-        local consul_exe="$BIN_DIR/consul"
-        if [[ "$(uname -s)" == *"MINGW"* ]]; then
-            consul_exe="$BIN_DIR/consul.exe"
-        fi
-
-        if [ ! -f "$consul_exe" ]; then
-            log_warn "Consul binary not found at $consul_exe. Cannot check status. ⚠️"
-        else
-            local consul_status_output=$("$consul_exe" status -format=json 2>/dev/null)
-            local consul_exit_code=$?
-
-            if [ $consul_exit_code -eq 0 ]; then
-                log_info "Consul server is running. Details:"
-                echo "$consul_status_output" | jq .
-                local leader=$(echo "$consul_status_output" | jq -r '.[0]') # Leader is usually the first element for status
-                echo -e "\n${YELLOW}Consul Summary:${NC}"
-                echo -e "  Leader: ${GREEN}${leader:-N/A}${NC}"
-                log_info "Consul is operational. 🎉"
+        local consul_pid=""
+        if [ -f "$LAB_CONSUL_PID_FILE" ]; then
+            consul_pid=$(cat "$LAB_CONSUL_PID_FILE")
+            if ps -p "$consul_pid" > /dev/null; then
+                consul_is_running=true
             else
-                log_warn "Consul server is NOT RUNNING or not reachable on $CONSUL_ADDR. 🔴"
-                log_warn "Check if the process is running or if the port is open."
-                if [ -f "$LAB_CONSUL_PID_FILE" ]; then
-                    local pid=$(cat "$LAB_CONSUL_PID_FILE")
-                    if ps -p "$pid" > /dev/null; then
-                        log_warn "A PID file exists ($LAB_CONSUL_PID_FILE) indicating PID $pid, but the server is not responding."
-                        log_warn "This might be a zombie process. Consider running '$0 stop' then '$0 cleanup'."
-                    else
-                        log_warn "PID file ($LAB_CONSUL_PID_FILE) exists but no process with that PID ($pid) is running."
-                        log_warn "The PID file might be stale. Consider running '$0 cleanup'."
-                    fi
-                else
-                    log_warn "No PID file found for Consul. Consul might not have been started or crashed unexpectedly."
-                fi
+                log_warn "Consul PID file exists but process $consul_pid is not running. Cleaning up stale PID file. ⚠️"
+                rm -f "$LAB_CONSUL_PID_FILE"
             fi
         fi
+
+        if [ "$consul_is_running" = true ]; then
+            log_info "Consul process (PID: $consul_pid) is running. Attempting to get Consul server status..."
+            local CONSUL_STATUS_OUTPUT
+            if CONSUL_STATUS_OUTPUT=$(get_consul_status); then
+                log_info "Consul server is running. Details:"
+                local consul_leader=$(echo "$CONSUL_STATUS_OUTPUT" | jq -r '.[0]')
+                echo "  Leader: $consul_leader"
+                log_info "Consul is READY. ✅"
+            else
+                log_warn "Consul process is running but not responding to API calls. Check logs ($CONSUL_DIR/consul.log) ⚠️"
+            fi
+        else
+            log_info "Consul server is not running. 🛑"
+        fi
     fi
+
     log_info "=================================================="
 }
-
 
 # --- Function: Display final information ---
 display_final_info() {
@@ -1285,39 +1266,16 @@ display_final_info() {
     log_info "LAB VAULT IS READY TO USE!"
     log_info "=================================================="
 
-    echo -e "\n${YELLOW}MAIN ACCESS DETAILS:${NC}"
-    echo -e "URL: ${GREEN}$VAULT_ADDR${NC}"
-    echo -e "Root Token: ${GREEN}root${NC} (also saved in $VAULT_DIR/root_token.txt)"
-    echo -e "Example user: ${GREEN}devuser / devpass${NC} (with 'default' policy)"
+    local wsl_ip=$(ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+    local vault_root_token=$(cat "$VAULT_DIR/root_token.txt" 2>/dev/null)
 
-    if [ "$BACKEND_TYPE" == "consul" ]; then
-        echo -e "\n${YELLOW}CONSUL DETAILS:${NC}"
-        echo -e "Consul URL: ${GREEN}$CONSUL_ADDR${NC}"
-        echo -e "Consul UI: ${GREEN}$CONSUL_ADDR/ui${NC}"
-        if [ -f "$CONSUL_DIR/acl_master_token.txt" ]; then
-            echo -e "Consul ACL Master Token (for management): ${GREEN}$(cat "$CONSUL_DIR/acl_master_token.txt")${NC}"
-            echo -e "Export for CLI: ${GREEN}export CONSUL_HTTP_TOKEN=\"$(cat "$CONSUL_DIR/acl_master_token.txt")\"${NC}"
-            echo -e "Test connection: ${GREEN}$BIN_DIR/consul members${NC} (after exporting token)"
-        fi
-    fi
-
-    echo -e "\n${RED}SECURITY WARNING:${NC}"
-    echo -e "${RED}The Vault Root Token and Unseal Key are stored in plain text files in ${VAULT_DIR}.${NC}"
-    if [ "$BACKEND_TYPE" == "consul" ]; then
-        echo -e "${RED}The Consul ACL Master Token is stored in ${CONSUL_DIR}.${NC}"
-    fi
-    echo -e "${RED}THIS IS ONLY FOR LAB/DEVELOPMENT PURPOSES AND IS HIGHLY INSECURE FOR PRODUCTION ENVIRONMENTS.${NC}"
-    echo -e "${RED}In production, use secure methods for unsealing (e.g., Auto Unseal, Shamir's Secret Sharing) and manage root tokens/ACLs with extreme care.${NC}"
-
-
-    echo -e "\n${YELLOW}DETAILED ACCESS POINTS:${NC}"
-    echo -e "To interact with Vault via CLI, ensure these environment variables are set in your session:"
+    # --- Sezione di Interazione e Gestione ---
+    echo -e "\n${YELLOW}To interact with Vault via CLI, ensure these environment variables are set in your session:${NC}"
     echo -e "  export VAULT_ADDR=$VAULT_ADDR"
-    echo -e "  export VAULT_TOKEN=root"
+    echo -e "  export VAULT_TOKEN=$vault_root_token"
     echo -e "Then you can use commands like:"
     echo -e "  ${GREEN}$BIN_DIR/vault kv get secret/test-secret${NC}"
     echo -e "  ${GREEN}$BIN_DIR/vault kv get kv/test-secret${NC}"
-
 
     echo -e "\n${YELLOW}APPROLE 'web-application' DETAILS:${NC}"
     if [ -f "$VAULT_DIR/approle_role_id.txt" ]; then
@@ -1332,7 +1290,7 @@ display_final_info() {
     fi
 
     echo -e "\n${YELLOW}Current Vault status (run '$0 status' for live check):${NC}"
-    check_lab_status # Call the status function for immediate display
+    check_lab_status
 
     echo -e "\n${YELLOW}To test AppRole authentication:${NC}"
     echo "export VAULT_ADDR=$VAULT_ADDR"
@@ -1347,6 +1305,33 @@ display_final_info() {
     echo -e "  Clean up all data: ${GREEN}$0 cleanup${NC}"
     echo -e "  (The script will automatically use the last saved backend type. Use '--backend <type>' to override.)"
 
+
+    # --- Sezione Dettagli di Accesso e Sicurezza ---
+    echo -e "\n--------------------------------------------------"
+    echo -e "\n${RED}SECURITY WARNING:${NC}"
+    echo -e "${RED}The Vault Root Token and Unseal Key are stored in plain text files in ${VAULT_DIR}.${NC}"
+    if [ "$BACKEND_TYPE" == "consul" ]; then
+        echo -e "${RED}The Consul ACL Master Token is stored in ${CONSUL_DIR}.${NC}"
+    fi
+    echo -e "${RED}THIS IS ONLY FOR LAB/DEVELOPMENT PURPOSES AND IS HIGHLY INSECURE FOR PRODUCTION ENVIRONMENTS.${NC}"
+    echo -e "${RED}In production, use secure methods for unsealing (e.g., Auto Unseal, Shamir's Secret Sharing) and manage root tokens/ACLs with extreme care.${NC}"
+
+    echo -e "\n${YELLOW}MAIN ACCESS DETAILS:${NC}"
+    echo -e "  🔗 Vault UI URL: ${GREEN}$VAULT_ADDR${NC}"
+    echo -e "  🔑 Vault Root Token: ${GREEN}$vault_root_token${NC} (also saved in $VAULT_DIR/root_token.txt)"
+    echo -e "  Example user: ${GREEN}devuser / devpass${NC} (with 'default' policy)"
+
+    if [ "$BACKEND_TYPE" == "consul" ]; then
+        local consul_master_token=$(cat "$CONSUL_DIR/acl_master_token.txt" 2>/dev/null)
+        echo -e "\n${YELLOW}CONSUL DETAILS:${NC}"
+        echo -e "  🔗 Consul UI URL: ${GREEN}http://${wsl_ip}:8500/ui${NC}"
+        if [ -n "$consul_master_token" ]; then
+            echo -e "  🔑 Consul ACL Master Token (for management): ${GREEN}$consul_master_token${NC}"
+            echo -e "  To manage Consul via CLI, export the token:"
+            echo -e "    ${GREEN}export CONSUL_HTTP_TOKEN=\"$consul_master_token\"${NC}"
+        fi
+    fi
+    echo -e "--------------------------------------------------"
 
     log_info "\nEnjoy your Vault!"
     log_info "Vault logs are available at: $VAULT_DIR/vault.log"
@@ -1401,15 +1386,6 @@ restart_lab_environment() {
     log_info "Vault lab environment restarted and unsealed. 🔄"
 }
 
-# --- Funzione reset ---
-reset_lab_environment() {
-    log_info "\n=================================================="
-    log_info "RESETTING VAULT LAB ENVIRONMENT (Backend: $BACKEND_TYPE)"
-    log_info "=================================================="
-    cleanup_previous_environment
-    start_lab_environment_core
-}
-
 # --- Main ---
 main() {
     if [ ! -t 1 ]; then COLORS_ENABLED=false; fi
@@ -1417,8 +1393,6 @@ main() {
     local command="start"
     local temp_base_dir=""
     local original_args=("$@")
-
-    load_backend_type_from_config
 
     local i=1
     while [[ $i -le ${#original_args[@]} ]]; do
@@ -1471,6 +1445,35 @@ main() {
     fi
 
     if [ "$COLORS_ENABLED" = false ]; then GREEN=''; YELLOW=''; RED=''; NC=''; fi
+
+    # Load backend type from config file for all commands that are not 'start' or 'reset'
+    if [[ "$command" != "start" && "$command" != "reset" ]]; then
+        load_backend_type_from_config
+    fi
+
+    # Check if backend was set via CLI argument, if not, prompt the user only for 'start' or 'reset'
+    if [ "$BACKEND_TYPE_SET_VIA_ARG" = false ] && [[ "$command" == "start" || "$command" == "reset" ]]; then
+        echo -e "\n${YELLOW}No backend specified via command line argument (--backend).${NC}"
+        while true; do
+            echo -e "${YELLOW}Please choose a storage backend for Vault (file or consul, default: file):${NC}"
+            read -p "> " choice
+            choice=${choice:-file} # Default to 'file' if input is empty
+            case "$choice" in
+                file|File|FILE)
+                    BACKEND_TYPE="file"
+                    break
+                    ;;
+                consul|Consul|CONSUL)
+                    BACKEND_TYPE="consul"
+                    break
+                    ;;
+                *)
+                    log_warn "Invalid choice. Please enter 'file' or 'consul'. ⚠️"
+                    ;;
+            esac
+        done
+        echo -e "Using backend: ${GREEN}$BACKEND_TYPE${NC}"
+    fi
 
     case "$command" in
         start)
