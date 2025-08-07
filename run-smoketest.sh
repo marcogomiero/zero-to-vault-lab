@@ -82,33 +82,22 @@ start_service_and_get_token() {
     local backend="$2"
 
     echo -e "\n${YELLOW}Starting service and capturing token...${NC}" >&2
+
     local command="$script start --backend $backend -c"
-    local _  # placeholder for command output
-    _=$(eval "$command" 2>&1)
+    local output
 
-    local token_file=""
-    if [[ "$backend" == "file" || "$backend" == "consul" ]]; then
-        token_file="$VAULT_DIR/root_token.txt"
-    elif [[ "$backend" == "openbao" ]]; then
-        token_file="$BAO_DIR/root_token.txt"
-    fi
+    output=$(eval "$command" 2>&1)
 
-    if [ -f "$token_file" ]; then
-        local token
-        token=$(cat "$token_file")
-        if [ -n "$token" ]; then
-            echo -e "${GREEN}Root token found: $token${NC}" >&2
-            echo "$token"  # ✅ solo il token va su stdout
-            return 0
-        else
-            echo -e "${RED}Token file exists but is empty: $token_file${NC}" >&2
-        fi
+    if echo "$output" | grep -q "Root Token: root"; then
+        echo -e "${GREEN}Root token found.${NC}" >&2
+        echo "root"
+        return 0
     else
-        echo -e "${RED}Token file not found: $token_file${NC}" >&2
+        echo -e "${RED}Could not extract root token from output of $backend. This is a critical failure for functional tests.${NC}" >&2
+        echo -e "The full script output was:" >>"$LOG_FILE"
+        echo "$output" >>"$LOG_FILE"
+        return 1
     fi
-
-    echo -e "${RED}Failed to get root token for backend $backend.${NC}" >&2
-    return 1
 }
 
 # --- Functional Tests ---
@@ -129,8 +118,6 @@ run_functional_tests() {
         INSECURE_FLAG="-k"
         VAULT_ADDR="https://127.0.0.1:$PORT"
     fi
-
-    echo -e "${CYAN}Using token: '${TOKEN}'${NC}"
 
     local CURL_COMMAND_PREFIX="curl -s $INSECURE_FLAG -H 'X-Vault-Token: $TOKEN' -H 'Content-Type: application/json'"
     local HEALTH_CHECK_URL="$VAULT_ADDR/v1/sys/health"
