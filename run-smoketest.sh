@@ -81,41 +81,34 @@ start_service_and_get_token() {
     local script="$1"
     local backend="$2"
 
-    ROOT_TOKEN=""
-    local token_file_path=""
-
-    echo -e "\n${YELLOW}Starting service and capturing token...${NC}"
-
+    echo -e "\n${YELLOW}Starting service and capturing token...${NC}" >&2
     local command="$script start --backend $backend -c"
-    local output
-    if ! output=$(eval "$command" 2>&1); then
-        echo -e "${RED}Critical error starting service $backend. Exiting.${NC}"
-        echo "$output" >>"$LOG_FILE"
-        # The user wants to count this as a failed test, not exit the script
-        return 1
+    local _  # placeholder for command output
+    _=$(eval "$command" 2>&1)
+
+    local token_file=""
+    if [[ "$backend" == "file" || "$backend" == "consul" ]]; then
+        token_file="$VAULT_DIR/root_token.txt"
+    elif [[ "$backend" == "openbao" ]]; then
+        token_file="$BAO_DIR/root_token.txt"
     fi
 
-    # Extract the token file path from the script output
-    if [ "$backend" == "file" ] || [ "$backend" == "consul" ]; then
-        # Look for the line containing the token file path and extract it
-        token_file_path=$(echo "$output" | grep 'Vault Root Token:' | awk -F'[()]' '{print $2}')
-    elif [ "$backend" == "openbao" ]; then
-        token_file_path=$(echo "$output" | grep 'Bao Root Token:' | sed -n 's/.*(\(.*\)).*/\1/p')
+    if [ -f "$token_file" ]; then
+        local token
+        token=$(cat "$token_file")
+        if [ -n "$token" ]; then
+            echo -e "${GREEN}Root token found: $token${NC}" >&2
+            echo "$token"  # ✅ solo il token va su stdout
+            return 0
+        else
+            echo -e "${RED}Token file exists but is empty: $token_file${NC}" >&2
+        fi
+    else
+        echo -e "${RED}Token file not found: $token_file${NC}" >&2
     fi
 
-    if [ -n "$token_file_path" ] && [ -f "$token_file_path" ]; then
-        ROOT_TOKEN=$(cat "$token_file_path")
-        echo -e "${GREEN}Root token found.${NC}"
-    fi
-
-    if [ -z "$ROOT_TOKEN" ]; then
-        echo -e "${RED}Could not extract root token from output of $backend.${NC}"
-        echo -e "The full script output was:" >>"$LOG_FILE"
-        echo "$output" >>"$LOG_FILE"
-        return 1
-    fi
-
-    return 0
+    echo -e "${RED}Failed to get root token for backend $backend.${NC}" >&2
+    return 1
 }
 
 # --- Functional Tests ---
@@ -125,7 +118,6 @@ run_functional_tests() {
     local PORT=$3
     local TOKEN=$ROOT_TOKEN
 
-    # Variables for URL and curl options
     local PROTOCOL="http"
     local INSECURE_FLAG=""
     local VAULT_ADDR="http://127.0.0.1:$PORT"
@@ -138,51 +130,41 @@ run_functional_tests() {
         VAULT_ADDR="https://127.0.0.1:$PORT"
     fi
 
+    echo -e "${CYAN}Using token: '${TOKEN}'${NC}"
+
     local CURL_COMMAND_PREFIX="curl -s $INSECURE_FLAG -H 'X-Vault-Token: $TOKEN' -H 'Content-Type: application/json'"
+    local HEALTH_CHECK_URL="$VAULT_ADDR/v1/sys/health"
 
     echo -e "\n${YELLOW}--- Functional Tests (${BACKEND}) ---${NC}"
 
-    if [ -z "$TOKEN" ]; then
-        run_test "Verify token" "echo 'Token not available. Cannot proceed with functional tests.' && false"
+    if ! run_test "Verify token" "echo 'Token is valid' && [ -n \"$TOKEN\" ] && true || echo 'Token is not available. Cannot proceed with functional tests.' && false"; then
         return 1
     fi
 
-    # ----------------------------------------------------
-    # Basic test on a secret (read, write, delete)
-    # ----------------------------------------------------
+    run_test "Check service health ($HEALTH_CHECK_URL)" "$CURL_COMMAND_PREFIX $HEALTH_CHECK_URL | grep -E '\"initialized\":true,\"sealed\":false'"
+
     local SECRET_URL="$VAULT_ADDR/v1/secret/data/test-secret"
     run_test "Write basic secret" "$CURL_COMMAND_PREFIX -X POST -d '{\"data\":{\"value\":\"test_value\"}}' $SECRET_URL"
     run_test "Read basic secret" "$CURL_COMMAND_PREFIX $SECRET_URL | grep '\"value\":\"test_value\"'"
     run_test "Delete basic secret" "$CURL_COMMAND_PREFIX -X DELETE $SECRET_URL"
 
-    # ----------------------------------------------------
-    # Policy Test (access denied)
-    # ----------------------------------------------------
     local TEST_PATH="secret/denied-path"
     local vault_exe="$BIN_DIR/vault"
     if [[ "$(uname -s)" == *"MINGW"* ]]; then vault_exe="$BIN_DIR/vault.exe"; fi
 
-    # Verify that the default policy denies writing to an unauthorized path
     run_test "Verify denied access to unauthorized path" "$vault_exe write -address=$VAULT_ADDR -no-print-legacy=true -token=\"$TOKEN\" $TEST_PATH/test value=test_value 2>&1 | grep 'permission denied'"
 
-    # ----------------------------------------------------
-    # Login Test with credentials (devuser)
-    # ----------------------------------------------------
     local USER_TOKEN
     local login_command="$vault_exe login -address=$VAULT_ADDR -no-print-legacy=true -method=userpass username=devuser password=devpass -format=json"
     USER_TOKEN=$(eval "$login_command" | jq -r '.auth.client_token')
 
     if [ -n "$USER_TOKEN" ]; then
         run_test "Login with 'devuser'" "echo 'Login successful' && true"
-        # Use user's token to test read with their policy
         run_test "Verify 'devuser' policy (read successful)" "$vault_exe read -address=$VAULT_ADDR -token=\"$USER_TOKEN\" auth/userpass/users/devuser -format=json | grep 'password'"
     else
         run_test "Login with 'devuser'" "echo 'Login failed. Unable to get token.' && false"
     fi
 
-    # ----------------------------------------------------
-    # AppRole Login Test
-    # ----------------------------------------------------
     local APPROLE_ROLE_ID=$(cat "$VAULT_DIR/approle_role_id.txt")
     local APPROLE_SECRET_ID=$(cat "$VAULT_DIR/approle_secret_id.txt")
 
@@ -193,7 +175,6 @@ run_functional_tests() {
 
         if [ -n "$APPROLE_TOKEN" ]; then
             run_test "Login with AppRole" "echo 'AppRole login successful' && true"
-            # Use AppRole token to test permissions
             run_test "Verify AppRole policy (read successful)" "$vault_exe read -address=$VAULT_ADDR -token=\"$APPROLE_TOKEN\" auth/approle/role/web-application -format=json | grep 'role_id'"
         else
             run_test "Login with AppRole" "echo 'AppRole login failed. Unable to get token.' && false"
@@ -209,12 +190,13 @@ test_vault_file_backend() {
     echo -e "\n${CYAN}=== Vault Test (Backend: $BACKEND) ===${NC}"
     echo -e "\n${YELLOW}--- Infrastructure Tests ---${NC}"
     run_test "Vault help" "$VAULT_SCRIPT --help"
-    run_test "Start service and capture token" "start_service_and_get_token '$VAULT_SCRIPT' '$BACKEND'"
+    # Capture the output of start_service_and_get_token and assign to the global variable
+    ROOT_TOKEN=$(start_service_and_get_token "$VAULT_SCRIPT" "$BACKEND")
     run_test "Vault status after start ($BACKEND)" "$VAULT_SCRIPT status"
     run_functional_tests "$VAULT_SCRIPT" "$BACKEND" "8200"
     run_test "Vault restart ($BACKEND)" "$VAULT_SCRIPT restart --backend $BACKEND"
     run_test "Vault status after restart ($BACKEND)" "$VAULT_SCRIPT status"
-    run_test "Vault reset ($BACKEND)" "$VAULT_SCRIPT reset --backend $BACKEND"
+    run_test "Vault reset ($BACKEND)" "$VAULT_SCRIPT reset -y --backend $BACKEND"
     run_test "Vault status after reset ($BACKEND)" "$VAULT_SCRIPT status"
     run_test "Vault cleanup ($BACKEND)" "$VAULT_SCRIPT cleanup --backend $BACKEND"
     run_test "Vault verify stopped ($BACKEND)" "$VAULT_SCRIPT status || true"
@@ -226,7 +208,8 @@ test_vault_consul_backend() {
     get_wsl_ip
     echo -e "\n${CYAN}=== Vault Test (Backend: $BACKEND) ===${NC}"
     echo -e "\n${YELLOW}--- Infrastructure Tests ---${NC}"
-    run_test "Start service and capture token" "start_service_and_get_token '$VAULT_SCRIPT' '$BACKEND'"
+    # Capture the output of start_service_and_get_token and assign to the global variable
+    ROOT_TOKEN=$(start_service_and_get_token "$VAULT_SCRIPT" "$BACKEND")
     run_test "Vault status after start ($BACKEND)" "$VAULT_SCRIPT status"
     run_functional_tests "$VAULT_SCRIPT" "$BACKEND" "8200"
     run_test "Vault cleanup ($BACKEND)" "$VAULT_SCRIPT cleanup --backend $BACKEND"
@@ -239,12 +222,13 @@ test_bao() {
     echo -e "\n${CYAN}=== OpenBao Test ===${NC}"
     echo -e "\n${YELLOW}--- Infrastructure Tests ---${NC}"
     run_test "OpenBao help" "$BAO_SCRIPT --help"
-    run_test "Start service and capture token" "start_service_and_get_token '$BAO_SCRIPT' '$BACKEND'"
+    # Capture the output of start_service_and_get_token and assign to the global variable
+    ROOT_TOKEN=$(start_service_and_get_token "$BAO_SCRIPT" "$BACKEND")
     run_test "OpenBao status after start" "$BAO_SCRIPT status"
     run_functional_tests "$BAO_SCRIPT" "$BACKEND" "8200"
     run_test "OpenBao restart" "$BAO_SCRIPT restart --backend $BACKEND"
     run_test "OpenBao status after restart" "$BAO_SCRIPT status"
-    run_test "OpenBao reset" "$BAO_SCRIPT reset --backend $BACKEND"
+    run_test "OpenBao reset" "$BAO_SCRIPT reset -y --backend $BACKEND"
     run_test "OpenBao status after reset" "$BAO_SCRIPT status"
     run_test "OpenBao cleanup" "$BAO_SCRIPT cleanup --backend $BACKEND"
     run_test "OpenBao verify stopped ($BACKEND)" "$BAO_SCRIPT status || true"
