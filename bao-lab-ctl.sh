@@ -1033,6 +1033,7 @@ main() {
             --no-color) COLORS_ENABLED=false ;;
             -b|--base-directory) i=$((i+1)); temp_base_dir="${!i}" ;;
             start|stop|restart|reset|status|cleanup) command="$arg" ;;
+            # non setto qui shell/with-bao, li intercettiamo subito dopo
         esac
         i=$((i+1))
     done
@@ -1043,6 +1044,33 @@ main() {
         BAO_DIR="$BASE_DIR/bao-lab"
         LAB_BAO_PID_FILE="$BAO_DIR/bao.pid"
     fi
+
+    # ====== COMANDI SPECIALI: niente backend, niente setup ======
+    if [[ "$1" == "shell" ]]; then
+        export BAO_ADDR="https://127.0.0.1:8200"
+        export BAO_SKIP_VERIFY="true"
+        [ -f "$BAO_DIR/root_token.txt" ] && export BAO_TOKEN="$(cat "$BAO_DIR/root_token.txt")"
+        # dedup BIN_DIR dal PATH
+        PATH="$(echo "$PATH" | awk -v RS=: -v ORS=: -v drop="$BIN_DIR" '$0!=drop' | sed 's/:$//')"
+        export PATH="$BIN_DIR:$PATH"
+        echo "🔒 OpenBao lab shell attiva. Digita 'exit' per uscire."
+        exec "${SHELL:-bash}" -i
+        return 0
+    fi
+
+    if [[ "$1" == "with-bao" ]]; then
+        shift
+        (
+          export BAO_ADDR="https://127.0.0.1:8200"
+          export BAO_SKIP_VERIFY="true"
+          [ -f "$BAO_DIR/root_token.txt" ] && export BAO_TOKEN="$(cat "$BAO_DIR/root_token.txt")"
+          PATH="$(echo "$PATH" | awk -v RS=: -v ORS=: -v drop="$BIN_DIR" '$0!=drop' | sed 's/:$//')"
+          export PATH="$BIN_DIR:$PATH"
+          "$@"
+        )
+        return $?
+    fi
+    # ====== FINE COMANDI SPECIALI ======
 
     if [ "$COLORS_ENABLED" = false ]; then GREEN=''; YELLOW=''; RED=''; NC=''; fi
 
