@@ -275,5 +275,5 @@ menu_bao() {
 
 # ---------- Main ----------
 check_ctrl
-initial_guard        # detect active instances and ask what to do
-while true; do menu_main; done
+initial_guard
+menu_main
