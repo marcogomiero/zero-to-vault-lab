@@ -55,7 +55,7 @@ Features
 
 * * * * *
 
-**New in v1.4.0 --- Unified Control Script**
+**New in v1.4.1 --- Unified Control Scrip [BETA]t**
 ------------------------------------------
 
 -   Single entry point script for both Vault and Bao.
