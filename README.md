@@ -11,7 +11,7 @@ This repository currently includes:
 
 -   **OpenBao Lab:** A single-instance OpenBao environment with file storage.
 
--   A new top-level script `lab-ctl.sh` has been introduced to manage both **Vault** and **OpenBao** labs from a single entry point (currently in BETA)
+-   A new top-level script `lab-menu.sh` has been introduced to manage both **Vault** and **OpenBao** labs from a single entry point (currently in BETA)
 
 HashiCorp Vault Lab (via `vault-lab-ctl.sh`)
 --------------------------------------------
