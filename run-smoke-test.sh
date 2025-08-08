@@ -1,222 +1,153 @@
 #!/usr/bin/env bash
+# Fast smoke tests for vault-lab-ctl.sh (minimal console output)
+
 set -euo pipefail
 
-# Minimal-verbosity smoke tests for vault-lab-ctl.sh
-# Adds "status" tests for file and consul backends.
-# - Prints only per-test start/end with status (OK/FAIL/SKIP)
-# - On failure, prints the log file location (and last lines)
-# - Summary at the end: total, passed, skipped, failed, duration
-# - Creates isolated temp dirs per test (-b) and uses -c to avoid prompts
-# - Skips Consul tests if 'consul' is not available
+# --- robust path bootstrap ---
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd -P)"
+CTRL_SCRIPT="${CTRL_SCRIPT:-${SCRIPT_DIR}/vault-lab-ctl.sh}"
+if [[ ! -x "$CTRL_SCRIPT" ]]; then
+  echo "ERROR: CTRL_SCRIPT '$CTRL_SCRIPT' not found or not executable" >&2
+  exit 2
+fi
+CTRL_DIR="$(cd -- "$(dirname -- "$CTRL_SCRIPT")" &>/dev/null && pwd -P)"
+export PATH="${SCRIPT_DIR}/bin:${CTRL_DIR}/bin:${PATH}"
+CTRL_SCRIPT_NAME="$(basename "$CTRL_SCRIPT")"
+# --- end bootstrap ---
 
-CTRL_SCRIPT="${CTRL_SCRIPT:-./vault-lab-ctl.sh}"
-LOG_DIR="${LOG_DIR:-./smoke-logs}"
-QUIET="${QUIET:-1}"           # 1=minimal output, 0=pass-through (verbose)
-TAIL_ON_FAIL="${TAIL_ON_FAIL:-30}"  # how many log lines to show on failure
-
-TIMEOUT_START_FILE=${TIMEOUT_START_FILE:-180}
-TIMEOUT_STOP_FILE=${TIMEOUT_STOP_FILE:-60}
-TIMEOUT_RESTART_FILE=${TIMEOUT_RESTART_FILE:-120}
-TIMEOUT_STATUS_FILE=${TIMEOUT_STATUS_FILE:-30}
-
-TIMEOUT_START_CONSUL=${TIMEOUT_START_CONSUL:-240}
-TIMEOUT_STOP_CONSUL=${TIMEOUT_STOP_CONSUL:-90}
-TIMEOUT_RESTART_CONSUL=${TIMEOUT_RESTART_CONSUL:-180}
-TIMEOUT_STATUS_CONSUL=${TIMEOUT_STATUS_CONSUL:-30}
-
-SLEEP_AFTER_STOP=${SLEEP_AFTER_STOP:-2}
-
-# Colors (disabled if not a TTY)
+# Colors
 if [ -t 1 ]; then
-  RED=$'\e[31m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; BOLD=$'\e[1m'; RESET=$'\e[0m'
+  RED=$'\e[31m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; RESET=$'\e[0m'
 else
-  RED=''; GREEN=''; YELLOW=''; BOLD=''; RESET=''
+  RED=''; GREEN=''; YELLOW=''; RESET=''
 fi
 
+# Config
+LOG_DIR="${LOG_DIR:-./smoke-logs}"
+QUIET="${QUIET:-1}"
+BACKENDS="${BACKENDS:-file,consul}"
+
+TIMEOUT_START=${TIMEOUT_START:-60}
+TIMEOUT_STATUS=${TIMEOUT_STATUS:-20}
+TIMEOUT_RESTART=${TIMEOUT_RESTART:-60}
+TIMEOUT_STOP=${TIMEOUT_STOP:-30}
+SLEEP_AFTER_STOP=${SLEEP_AFTER_STOP:-2}
+
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
-timestamp() { date +%H:%M:%S; }
-secs_to_hms() { # $1 seconds
-  local s=$1 h m
-  h=$((s/3600)); m=$(((s%3600)/60)); s=$((s%60))
-  printf "%02d:%02d:%02d" "$h" "$m" "$s"
-}
+secs_to_hms(){ s=$1; printf "%02d:%02d:%02d" $((s/3600)) $(((s%3600)/60)) $((s%60)); }
 
 ensure_prereqs() {
-  local missing=0
   for c in timeout pgrep mktemp; do
-    if ! have_cmd "$c"; then echo "Missing '$c' in PATH" >&2; missing=1; fi
+    have_cmd "$c" || { echo "Missing '$c' in PATH" >&2; exit 2; }
   done
-  if [ $missing -ne 0 ]; then
-    echo "Install prerequisites and retry." >&2
-    exit 2
-  fi
 }
 
-run_quiet() { # $1 timeout_secs, rest = command...
-  local t=$1; shift
-  if [ "${QUIET}" = "1" ]; then
-    timeout "$t" "$@" >>"$_LOG" 2>&1
+run_quiet() { local t=$1; shift
+  if [ "$QUIET" = "1" ]; then
+    timeout --kill-after=5 "$t" "$@" >>"$_LOG" 2>&1
   else
-    timeout "$t" "$@" 2>&1 | tee -a "$_LOG"
+    timeout --kill-after=5 "$t" "$@" 2>&1 | tee -a "$_LOG"
   fi
 }
 
-pgrep_running() { pgrep -f "$1" >/dev/null 2>&1; }
-assert_running() { pgrep_running "$1"; }
-assert_not_running() { ! pgrep_running "$1"; }
+assert_not_running(){ ! pgrep -f "$1" >/dev/null 2>&1; }
 
-with_tmpdir() {
-  local __var=$1
-  local d; d=$(mktemp -d)
-  eval "$__var=\"$d\""
+run_block() {
+  local BACKEND="$1"
+  local BASE; BASE="$(mktemp -d)"
+  local tests=(start status restart stop)
+
+  for name in "${tests[@]}"; do
+    N=$((N+1))
+    _LOG="${LOG_DIR}/${BACKEND}_${name}.log"; :> "$_LOG"
+
+    local CMD_SHORT="${CTRL_SCRIPT_NAME} --backend ${BACKEND} ${name}"
+    local CMD_FULL=( "$CTRL_SCRIPT" --backend "$BACKEND" -b "$BASE" "$name" )
+
+    echo "Running test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}"
+
+    case "$name" in
+      start)
+        if run_quiet "$TIMEOUT_START" "${CMD_FULL[@]}" \
+           && run_quiet "$TIMEOUT_STATUS" "$CTRL_SCRIPT" --backend "$BACKEND" -b "$BASE" status
+        then echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${GREEN}OK${RESET}"; PASS=$((PASS+1))
+        else echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${RED}FAIL${RESET} (see ${_LOG})"; FAIL=$((FAIL+1))
+        fi
+        ;;
+      status)
+        if run_quiet "$TIMEOUT_STATUS" "${CMD_FULL[@]}"
+        then echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${GREEN}OK${RESET}"; PASS=$((PASS+1))
+        else echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${RED}FAIL${RESET} (see ${_LOG})"; FAIL=$((FAIL+1))
+        fi
+        ;;
+      restart)
+        if run_quiet "$TIMEOUT_RESTART" "${CMD_FULL[@]}" \
+           && run_quiet "$TIMEOUT_STATUS" "$CTRL_SCRIPT" --backend "$BACKEND" -b "$BASE" status
+        then echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${GREEN}OK${RESET}"; PASS=$((PASS+1))
+        else echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${RED}FAIL${RESET} (see ${_LOG})"; FAIL=$((FAIL+1))
+        fi
+        ;;
+      stop)
+        if run_quiet "$TIMEOUT_STOP" "${CMD_FULL[@]}"; then
+          sleep "$SLEEP_AFTER_STOP"
+          if [ "$BACKEND" = "consul" ]; then
+            if assert_not_running "vault.*server" && assert_not_running "consul.*agent"; then
+              echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${GREEN}OK${RESET}"; PASS=$((PASS+1))
+            else
+              echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${RED}FAIL${RESET} (see ${_LOG})"; FAIL=$((FAIL+1))
+            fi
+          else
+            if assert_not_running "vault.*server"; then
+              echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${GREEN}OK${RESET}"; PASS=$((PASS+1))
+            else
+              echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${RED}FAIL${RESET} (see ${_LOG})"; FAIL=$((FAIL+1))
+            fi
+          fi
+        else
+          echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${RED}FAIL${RESET} (see ${_LOG})"; FAIL=$((FAIL+1))
+        fi
+        ;;
+    esac
+  done
+
+  run_quiet 10 "$CTRL_SCRIPT" --backend "$BACKEND" -b "$BASE" stop || true
+  run_quiet 10 "$CTRL_SCRIPT" -b "$BASE" cleanup || true
+  rm -rf "$BASE"
 }
 
-cleanup_env() {
-  local base=$1 backend=$2
-  "$CTRL_SCRIPT" --backend "$backend" -b "$base" stop >>"$_LOG" 2>&1 || true
-  "$CTRL_SCRIPT" -b "$base" cleanup >>"$_LOG" 2>&1 || true
-}
-
-# ------------------ Tests ------------------
-t_start_file() {
-  with_tmpdir BASE
-  trap 'cleanup_env "$BASE" file; rm -rf "$BASE"' RETURN
-  run_quiet "$TIMEOUT_START_FILE" "$CTRL_SCRIPT" --backend file -c -b "$BASE" start || return 1
-  assert_running "vault.*server"
-}
-
-t_status_file() {
-  with_tmpdir BASE
-  trap 'cleanup_env "$BASE" file; rm -rf "$BASE"' RETURN
-  run_quiet "$TIMEOUT_START_FILE" "$CTRL_SCRIPT" --backend file -c -b "$BASE" start || return 1
-  run_quiet "$TIMEOUT_STATUS_FILE" "$CTRL_SCRIPT" --backend file -b "$BASE" status || return 1
-  assert_running "vault.*server"
-}
-
-t_stop_file() {
-  with_tmpdir BASE
-  trap 'cleanup_env "$BASE" file; rm -rf "$BASE"' RETURN
-  run_quiet "$TIMEOUT_START_FILE" "$CTRL_SCRIPT" --backend file -c -b "$BASE" start || return 1
-  run_quiet "$TIMEOUT_STOP_FILE" "$CTRL_SCRIPT" --backend file -b "$BASE" stop || return 1
-  sleep "$SLEEP_AFTER_STOP"
-  assert_not_running "vault.*server"
-}
-
-t_restart_file() {
-  with_tmpdir BASE
-  trap 'cleanup_env "$BASE" file; rm -rf "$BASE"' RETURN
-  run_quiet "$TIMEOUT_START_FILE" "$CTRL_SCRIPT" --backend file -c -b "$BASE" start || return 1
-  run_quiet "$TIMEOUT_RESTART_FILE" "$CTRL_SCRIPT" --backend file -b "$BASE" restart || return 1
-  assert_running "vault.*server"
-}
-
-t_start_consul() {
-  have_cmd consul || return 77  # skip
-  with_tmpdir BASE
-  trap 'cleanup_env "$BASE" consul; rm -rf "$BASE"' RETURN
-  run_quiet "$TIMEOUT_START_CONSUL" "$CTRL_SCRIPT" --backend consul -c -b "$BASE" start || return 1
-  assert_running "vault.*server" && assert_running "consul.*agent"
-}
-
-t_status_consul() {
-  have_cmd consul || return 77  # skip
-  with_tmpdir BASE
-  trap 'cleanup_env "$BASE" consul; rm -rf "$BASE"' RETURN
-  run_quiet "$TIMEOUT_START_CONSUL" "$CTRL_SCRIPT" --backend consul -c -b "$BASE" start || return 1
-  run_quiet "$TIMEOUT_STATUS_CONSUL" "$CTRL_SCRIPT" --backend consul -b "$BASE" status || return 1
-  assert_running "vault.*server" && assert_running "consul.*agent"
-}
-
-t_stop_consul() {
-  have_cmd consul || return 77  # skip
-  with_tmpdir BASE
-  trap 'cleanup_env "$BASE" consul; rm -rf "$BASE"' RETURN
-  run_quiet "$TIMEOUT_START_CONSUL" "$CTRL_SCRIPT" --backend consul -c -b "$BASE" start || return 1
-  run_quiet "$TIMEOUT_STOP_CONSUL" "$CTRL_SCRIPT" --backend consul -b "$BASE" stop || return 1
-  sleep "$SLEEP_AFTER_STOP"
-  assert_not_running "vault.*server" && assert_not_running "consul.*agent"
-}
-
-t_restart_consul() {
-  have_cmd consul || return 77  # skip
-  with_tmpdir BASE
-  trap 'cleanup_env "$BASE" consul; rm -rf "$BASE"' RETURN
-  run_quiet "$TIMEOUT_START_CONSUL" "$CTRL_SCRIPT" --backend consul -c -b "$BASE" start || return 1
-  run_quiet "$TIMEOUT_RESTART_CONSUL" "$CTRL_SCRIPT" --backend consul -b "$BASE" restart || return 1
-  assert_running "vault.*server" && assert_running "consul.*agent"
-}
-
-# -------------- Runner --------------
 main() {
   ensure_prereqs
   mkdir -p "$LOG_DIR"
 
-  declare -a NAMES=(
-    "start (file)"
-    "status (file)"
-    "stop (file)"
-    "restart (file)"
-    "start (consul)"
-    "status (consul)"
-    "stop (consul)"
-    "restart (consul)"
-  )
-  declare -a FUNCS=(
-    t_start_file
-    t_status_file
-    t_stop_file
-    t_restart_file
-    t_start_consul
-    t_status_consul
-    t_stop_consul
-    t_restart_consul
-  )
+  PASS=0; FAIL=0; SKIP=0; N=0
 
-  local total=${#FUNCS[@]}
-  local pass=0 skip=0 fail=0
-  local start_ts; start_ts=$(date +%s)
+  IFS=',' read -r -a BKS <<< "$BACKENDS"
+  TOTAL=$(( ${#BKS[@]} * 4 ))
 
-  for i in "${!FUNCS[@]}"; do
-    local idx=$((i+1))
-    local name="${NAMES[$i]}"
-    local fn="${FUNCS[$i]}"
-    _LOG="${LOG_DIR}/$(printf "%02d" "$idx")_${fn}.log"
-    : > "$_LOG"
+  echo "Using control script: $CTRL_SCRIPT"
+  local start_ts=$(date +%s)
 
-    echo "[${BOLD}$(timestamp)${RESET}] start test ${idx}/${total}: ${name}"
-
-    if "$fn"; then
-      echo "[${BOLD}$(timestamp)${RESET}] end   test ${idx}/${total}: ${name} - ${GREEN}OK${RESET}"
-      pass=$((pass+1))
-    else
-      rc=$?
-      if [ "$rc" -eq 77 ]; then
-        echo "[${BOLD}$(timestamp)${RESET}] end   test ${idx}/${total}: ${name} - ${YELLOW}SKIP${RESET}"
-        skip=$((skip+1))
-      else
-        echo "[${BOLD}$(timestamp)${RESET}] end   test ${idx}/${total}: ${name} - ${RED}FAIL${RESET}"
-        echo "  -> log: ${_LOG}"
-        if [ "$TAIL_ON_FAIL" -gt 0 ]; then
-          echo "  -- last ${TAIL_ON_FAIL} log lines --"
-          tail -n "$TAIL_ON_FAIL" "$_LOG" | sed 's/^/  /'
-        fi
-        fail=$((fail+1))
-      fi
-    fi
+  for be in "${BKS[@]}"; do
+    run_block "$be"
   done
 
-  local end_ts; end_ts=$(date +%s)
-  local dur=$((end_ts - start_ts))
-
-  echo
+  local dur=$(( $(date +%s) - start_ts ))
   echo "========== SUMMARY =========="
-  echo "Total tests   : $total"
-  echo "Passed        : $pass"
-  echo "Skipped       : $skip"
-  echo "Failed        : $fail"
+  echo "Total tests   : $TOTAL"
+  echo "Passed        : $PASS"
+  echo "Skipped       : $SKIP"
+  echo "Failed        : $FAIL"
   echo "Duration      : $(secs_to_hms "$dur")"
   echo "Logs directory: ${LOG_DIR}"
-  if [ "$fail" -eq 0 ]; then exit 0; else exit 1; fi
+
+  echo "Running final cleanup..."
+  if "$CTRL_SCRIPT" cleanup >>"${LOG_DIR}/final_cleanup.log" 2>&1; then
+    echo "Performed full cleanup via vault-lab-ctl.sh cleanup ✅"
+  else
+    echo "WARNING: Cleanup failed (see ${LOG_DIR}/final_cleanup.log)"
+  fi
+
+  [ "$FAIL" -eq 0 ] || exit 1
 }
 
 main "$@"
