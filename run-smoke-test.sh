@@ -105,6 +105,8 @@ pick_cap() {
     *" cleanup")                                  echo "$CAP_CLEANUP" ;;
     "bao-lab-ctl.sh "*start)                      echo "$CAP_START_BAO" ;;
     "bao-lab-ctl.sh "*restart)                    echo "$CAP_RESTART_BAO" ;;
+    *" with-vault "* )                           echo "$CAP_STATUS" ;;
+    *" with-bao "*   )                           echo "$CAP_STATUS" ;;
     *)                                            echo 60 ;;
   esac
 }
@@ -115,6 +117,7 @@ TESTS=(
   # Vault file backend
   "$VAULT_CTRL --backend file -b $BASE_DIR start"
   "$VAULT_CTRL --backend file -b $BASE_DIR status"
+  "$VAULT_CTRL -b $BASE_DIR with-vault vault version"
   "$VAULT_CTRL --backend file -b $BASE_DIR restart"
   "$VAULT_CTRL --backend file -b $BASE_DIR stop"
   "$VAULT_CTRL --backend file -b $BASE_DIR cleanup"
@@ -127,6 +130,7 @@ TESTS=(
   # Bao (file-only, https)
   "$BAO_CTRL -b $BASE_DIR start"
   "$BAO_CTRL -b $BASE_DIR status"
+  "$BAO_CTRL   -b $BASE_DIR with-bao bao version"
   "$BAO_CTRL -b $BASE_DIR restart"
   "$BAO_CTRL -b $BASE_DIR stop"
   "$BAO_CTRL -b $BASE_DIR cleanup"
@@ -184,6 +188,12 @@ for i in "${!TESTS[@]}"; do
           ;;
         "bao-lab-ctl.sh "*stop|"bao-lab-ctl.sh "*cleanup)
           if assert_stopped "bao.*server"; then result="OK"; else result="FAIL"; fi
+          ;;
+        *" with-vault "*)
+          result="OK"
+          ;;
+        *" with-bao "*)
+          result="OK"
           ;;
         *)
           result="OK"
