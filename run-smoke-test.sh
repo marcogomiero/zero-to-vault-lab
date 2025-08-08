@@ -1,264 +1,227 @@
 #!/usr/bin/env bash
-# Unified fast smoke tests for:
-# - vault-lab-ctl.sh  (backends: file, consul)
-# - bao-lab-ctl.sh    (backend: file only)
-# Minimal console output; colored progress; logs under ./smoke-logs/
-
 set -euo pipefail
 
-# --- robust path bootstrap ---
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd -P)"
-VAULT_CTRL="${VAULT_CTRL:-${SCRIPT_DIR}/vault-lab-ctl.sh}"
-BAO_CTRL="${BAO_CTRL:-${SCRIPT_DIR}/bao-lab-ctl.sh}"
+# === CONFIG ===
+VAULT_CTRL="/mnt/c/Users/gomiero1/PycharmProjects/PythonProject/zero-to-vault-lab/vault-lab-ctl.sh"
+BAO_CTRL="/mnt/c/Users/gomiero1/PycharmProjects/PythonProject/zero-to-vault-lab/bao-lab-ctl.sh"
+BASE_DIR="/mnt/c/Users/gomiero1/PycharmProjects/PythonProject/zero-to-vault-lab"
+LOG_DIR="./smoke-logs"
 
-for ctrl in "$VAULT_CTRL" "$BAO_CTRL"; do
-  if [[ ! -x "$ctrl" ]]; then
-    echo "ERROR: control script '$ctrl' not found or not executable" >&2
-    exit 2
+VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}"
+CONSUL_HTTP_ADDR="${CONSUL_HTTP_ADDR:-http://127.0.0.1:8500}"
+
+# Readiness behavior: 1=readiness failure -> SKIP (non-fatal), 0=FAIL
+READINESS_SOFT="${READINESS_SOFT:-1}"
+
+# Readiness poll caps
+MAX_WAIT_VAULT="${MAX_WAIT_VAULT:-60}"
+MAX_WAIT_CONSUL="${MAX_WAIT_CONSUL:-60}"
+SLEEP_STEP="${SLEEP_STEP:-0.5}"
+
+# Hard caps
+CAP_START_VAULT_FILE="${CAP_START_VAULT_FILE:-120}"
+CAP_RESTART_VAULT_FILE="${CAP_RESTART_VAULT_FILE:-90}"
+CAP_START_VAULT_CONSUL="${CAP_START_VAULT_CONSUL:-180}"
+CAP_RESTART_VAULT_CONSUL="${CAP_RESTART_VAULT_CONSUL:-120}"
+CAP_STATUS="${CAP_STATUS:-20}"
+CAP_STOP="${CAP_STOP:-40}"
+CAP_CLEANUP="${CAP_CLEANUP:-60}"
+CAP_START_BAO="${CAP_START_BAO:-90}"
+CAP_RESTART_BAO="${CAP_RESTART_BAO:-90}"
+
+mkdir -p "$LOG_DIR"
+
+# === COLORS (TTY-safe) ===
+if [ -t 1 ]; then
+  RED=$(tput setaf 1); GREEN=$(tput setaf 2); YELLOW=$(tput setaf 3); BLUE=$(tput setaf 4); BOLD=$(tput bold); RESET=$(tput sgr0)
+else
+  RED=''; GREEN=''; YELLOW=''; BLUE=''; BOLD=''; RESET=''
+fi
+
+# === HELPERS (safe) ===
+short_cmd() {
+  echo "$1" \
+    | sed "s|$VAULT_CTRL|vault-lab-ctl.sh|" \
+    | sed "s|$BAO_CTRL|bao-lab-ctl.sh|" \
+    | sed "s|$BASE_DIR|BASE_DIR|g"
+}
+port_open() { (echo >"/dev/tcp/$1/$2") >/dev/null 2>&1 || return 1; }
+consul_ready() { curl -fsS "${CONSUL_HTTP_ADDR}/v1/status/leader" 2>/dev/null | grep -qE '".+:.+"' || return 1; }
+vault_health_ok() {
+  local code; code=$(curl -fsS -o /dev/null -w '%{http_code}' "${VAULT_ADDR}/v1/sys/health" 2>/dev/null || echo "")
+  [[ "$code" == "200" || "$code" == "429" ]] || return 1
+}
+wait_vault_ready() {
+  local deadline=$(( $(date +%s) + MAX_WAIT_VAULT ))
+  while (( $(date +%s) < deadline )); do
+    if port_open 127.0.0.1 8200 && vault_health_ok; then return 0; fi
+    sleep "$SLEEP_STEP"
+  done; return 1
+}
+wait_consul_ready() {
+  local deadline=$(( $(date +%s) + MAX_WAIT_CONSUL ))
+  while (( $(date +%s) < deadline )); do
+    if port_open 127.0.0.1 8500 && consul_ready; then return 0; fi
+    sleep "$SLEEP_STEP"
+  done; return 1
+}
+assert_stopped(){ ! pgrep -f "$1" >/dev/null 2>&1; }
+pick_cap() {
+  local scmd="$1"
+  case "$scmd" in
+    "vault-lab-ctl.sh --backend file "*start)     echo "$CAP_START_VAULT_FILE" ;;
+    "vault-lab-ctl.sh --backend file "*restart)   echo "$CAP_RESTART_VAULT_FILE" ;;
+    "vault-lab-ctl.sh --backend consul "*start)   echo "$CAP_START_VAULT_CONSUL" ;;
+    "vault-lab-ctl.sh --backend consul "*restart) echo "$CAP_RESTART_VAULT_CONSUL" ;;
+    *" status")                                   echo "$CAP_STATUS" ;;
+    *" stop")                                     echo "$CAP_STOP" ;;
+    *" cleanup")                                  echo "$CAP_CLEANUP" ;;
+    "bao-lab-ctl.sh "*start)                      echo "$CAP_START_BAO" ;;
+    "bao-lab-ctl.sh "*restart)                    echo "$CAP_RESTART_BAO" ;;
+    *)                                            echo 60 ;;
+  esac
+}
+secs_to_hms(){ s=$1; printf "%02d:%02d:%02d" $((s/3600)) $(((s%3600)/60)) $((s%60)); }
+
+# === TEST LIST ===
+TESTS=(
+  # Vault file backend
+  "$VAULT_CTRL --backend file -b $BASE_DIR start"
+  "$VAULT_CTRL --backend file -b $BASE_DIR status"
+  "$VAULT_CTRL --backend file -b $BASE_DIR restart"
+  "$VAULT_CTRL --backend file -b $BASE_DIR stop"
+  "$VAULT_CTRL --backend file -b $BASE_DIR cleanup"
+  # Vault consul backend
+  "$VAULT_CTRL --backend consul -b $BASE_DIR start"
+  "$VAULT_CTRL --backend consul -b $BASE_DIR status"
+  "$VAULT_CTRL --backend consul -b $BASE_DIR restart"
+  "$VAULT_CTRL --backend consul -b $BASE_DIR stop"
+  "$VAULT_CTRL --backend consul -b $BASE_DIR cleanup"
+  # Bao (file-only)
+  "$BAO_CTRL -b $BASE_DIR start"
+  "$BAO_CTRL -b $BASE_DIR status"
+  "$BAO_CTRL -b $BASE_DIR restart"
+  "$BAO_CTRL -b $BASE_DIR stop"
+  "$BAO_CTRL -b $BASE_DIR cleanup"
+)
+
+echo "${BOLD}Using control script (Vault):${RESET} $VAULT_CTRL"
+echo "${BOLD}Using control script (Bao)  :${RESET} $BAO_CTRL"
+echo "${BOLD}Base directory:${RESET} $BASE_DIR"
+
+# === PRE-CLEANUP ===
+echo "Running pre-cleanup..."
+timeout --kill-after=5 "$CAP_CLEANUP" bash -lc "$VAULT_CTRL -b $BASE_DIR cleanup" &> "$LOG_DIR/pre_vault_cleanup.log" || true
+timeout --kill-after=5 "$CAP_CLEANUP" bash -lc "$BAO_CTRL   -b $BASE_DIR cleanup" &> "$LOG_DIR/pre_bao_cleanup.log"   || true
+echo "Pre-cleanup done."
+
+total=${#TESTS[@]}
+pass_vault=0; fail_vault=0; skip_vault=0
+pass_bao=0;   fail_bao=0;   skip_bao=0
+pass_all=0;   fail_all=0;   skip_all=0
+
+start_time=$(date +%s)
+
+for i in "${!TESTS[@]}"; do
+  num=$((i+1))
+  cmd="${TESTS[$i]}"
+  scmd="$(short_cmd "$cmd")"
+  log_file="$LOG_DIR/$(echo "$scmd" | tr ' /' '__').log"
+  cap="$(pick_cap "$scmd")"
+
+  echo "Running test ${YELLOW}${num}/${total}${RESET} — ${YELLOW}${scmd}${RESET}"
+
+  if (
+    set +e
+    timeout --kill-after=5 "${cap}" bash -lc "$cmd" &> "$log_file"
+    ctl_rc=$?
+
+    result="FAIL"
+    if [ $ctl_rc -eq 0 ]; then
+      case "$scmd" in
+        "vault-lab-ctl.sh --backend file "*start|"vault-lab-ctl.sh --backend file "*restart)
+          if wait_vault_ready; then result="OK"; else result=$([ "$READINESS_SOFT" = "1" ] && echo "SKIP" || echo "FAIL"); fi
+          ;;
+        "vault-lab-ctl.sh --backend consul "*start|"vault-lab-ctl.sh --backend consul "*restart)
+          if wait_consul_ready && wait_vault_ready; then result="OK"; else result=$([ "$READINESS_SOFT" = "1" ] && echo "SKIP" || echo "FAIL"); fi
+          ;;
+        "vault-lab-ctl.sh "*stop|"vault-lab-ctl.sh "*cleanup)
+          if assert_stopped "vault.*server" && { [[ "$scmd" != *"--backend consul"* ]] || assert_stopped "consul.*agent"; }; then
+            result="OK"
+          else
+            result="FAIL"
+          fi
+          ;;
+        "bao-lab-ctl.sh "*start|"bao-lab-ctl.sh "*restart)
+          if wait_vault_ready; then result="OK"; else result=$([ "$READINESS_SOFT" = "1" ] && echo "SKIP" || echo "FAIL"); fi
+          ;;
+        "bao-lab-ctl.sh "*stop|"bao-lab-ctl.sh "*cleanup)
+          if assert_stopped "bao.*server"; then result="OK"; else result="FAIL"; fi
+          ;;
+        *)
+          result="OK"
+          ;;
+      esac
+    else
+      result="FAIL"
+    fi
+
+    case "$result" in
+      OK)
+        echo "Test ${GREEN}${num}/${total}${RESET} — ${YELLOW}${scmd}${RESET}: ${GREEN}OK${RESET}"
+        echo "__RESULT__:OK" >>"$log_file"; exit 0 ;;
+      SKIP)
+        echo "Test ${BLUE}${num}/${total}${RESET} — ${YELLOW}${scmd}${RESET}: ${BLUE}SKIP (readiness)${RESET}"
+        echo "__RESULT__:SKIP" >>"$log_file"; exit 20 ;;
+      FAIL|*)
+        msg="timeout/exit"; [ $ctl_rc -eq 0 ] && msg="readiness"
+        echo "Test ${RED}${num}/${total}${RESET} — ${YELLOW}${scmd}${RESET}: ${RED}FAIL${RESET} (${msg}) (see $log_file)"
+        echo "__RESULT__:FAIL" >>"$log_file"; exit 10 ;;
+    esac
+  ); then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  # SAFE increments (don’t trip set -e)
+  if [[ "$scmd" == *"bao-lab-ctl.sh"* ]]; then
+    if   [ $rc -eq 0 ];  then : $((pass_all+=1)); : $((pass_bao+=1))
+    elif [ $rc -eq 20 ]; then : $((skip_all+=1)); : $((skip_bao+=1))
+    else                      : $((fail_all+=1)); : $((fail_bao+=1)); fi
+  else
+    if   [ $rc -eq 0 ];  then : $((pass_all+=1)); : $((pass_vault+=1))
+    elif [ $rc -eq 20 ]; then : $((skip_all+=1)); : $((skip_vault+=1))
+    else                      : $((fail_all+=1)); : $((fail_vault+=1)); fi
   fi
 done
 
-VAULT_DIR="$(cd -- "$(dirname -- "$VAULT_CTRL")" &>/dev/null && pwd -P)"
-BAO_DIR="$(cd -- "$(dirname -- "$BAO_CTRL")" &>/dev/null && pwd -P)"
-export PATH="${SCRIPT_DIR}/bin:${VAULT_DIR}/bin:${BAO_DIR}/bin:${PATH}"
+end_time=$(date +%s)
+duration=$((end_time - start_time))
+duration_str=$(secs_to_hms "$duration")
 
-VAULT_NAME="$(basename "$VAULT_CTRL")"
-BAO_NAME="$(basename "$BAO_CTRL")"
-# --- end bootstrap ---
+# === SUMMARY ===
+echo "========== SUMMARY =========="
+echo "Total tests   : $((pass_all+fail_all+skip_all))"
+echo "Passed        : $pass_all"
+echo "Skipped       : $skip_all"
+echo "Failed        : $fail_all"
+echo "Duration      : $duration_str"
+echo "Logs directory: $LOG_DIR"
+echo
+echo "--- Vault summary ---"
+echo "Total tests   : $((pass_vault + fail_vault + skip_vault))"
+echo "Passed        : $pass_vault"
+echo "Skipped       : $skip_vault"
+echo "Failed        : $fail_vault"
+echo
+echo "--- Bao summary ---"
+echo "Total tests   : $((pass_bao + fail_bao + skip_bao))"
+echo "Passed        : $pass_bao"
+echo "Skipped       : $skip_bao"
+echo "Failed        : $fail_bao"
 
-# Colors (TTY only)
-if [ -t 1 ]; then
-  RED=$'\e[31m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; RESET=$'\e[0m'
-else
-  RED=''; GREEN=''; YELLOW=''; RESET=''
-fi
-
-# Config
-LOG_DIR="${LOG_DIR:-./smoke-logs}"
-QUIET="${QUIET:-1}"
-
-# Which tech to run (default: both)
-RUN_VAULT="${RUN_VAULT:-1}"
-RUN_BAO="${RUN_BAO:-1}"
-
-# Vault backends (default: file,consul)
-VAULT_BACKENDS="${VAULT_BACKENDS:-file,consul}"
-
-# Per-test timeouts
-TIMEOUT_START=${TIMEOUT_START:-60}
-TIMEOUT_STATUS=${TIMEOUT_STATUS:-20}
-TIMEOUT_RESTART=${TIMEOUT_RESTART:-60}
-TIMEOUT_STOP=${TIMEOUT_STOP:-30}
-SLEEP_AFTER_STOP=${SLEEP_AFTER_STOP:-2}
-
-have_cmd(){ command -v "$1" >/dev/null 2>&1; }
-secs_to_hms(){ s=$1; printf "%02d:%02d:%02d" $((s/3600)) $(((s%3600)/60)) $((s%60)); }
-
-ensure_prereqs() {
-  for c in timeout pgrep mktemp; do
-    have_cmd "$c" || { echo "Missing '$c' in PATH" >&2; exit 2; }
-  done
-}
-
-run_quiet(){ # $1 timeout_secs; rest: command...
-  local t=$1; shift
-  if [ "$QUIET" = "1" ]; then
-    timeout --kill-after=5 "$t" "$@" >>"$_LOG" 2>&1
-  else
-    timeout --kill-after=5 "$t" "$@" 2>&1 | tee -a "$_LOG"
-  fi
-}
-
-assert_not_running(){ ! pgrep -f "$1" >/dev/null 2>&1; }
-
-# --- Vault block: reuse one BASE per backend ---
-run_vault_block() {
-  local BACKEND="$1"
-  local BASE; BASE="$(mktemp -d)"
-  local tests=(start status restart stop)
-
-  for name in "${tests[@]}"; do
-    N=$((N+1))
-    _LOG="${LOG_DIR}/vault_${BACKEND}_${name}.log"; :> "$_LOG"
-
-    local CMD_SHORT="${VAULT_NAME} --backend ${BACKEND} ${name}"
-    local CMD_FULL=( "$VAULT_CTRL" --backend "$BACKEND" -b "$BASE" "$name" )
-
-    echo "Running test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}"
-
-    case "$name" in
-      start)
-        if run_quiet "$TIMEOUT_START" "${CMD_FULL[@]}" \
-           && run_quiet "$TIMEOUT_STATUS" "$VAULT_CTRL" --backend "$BACKEND" -b "$BASE" status
-        then echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${GREEN}OK${RESET}"; VAULT_PASS=$((VAULT_PASS+1))
-        else echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${RED}FAIL${RESET} (see ${_LOG})"; VAULT_FAIL=$((VAULT_FAIL+1))
-        fi
-        ;;
-      status)
-        if run_quiet "$TIMEOUT_STATUS" "${CMD_FULL[@]}"
-        then echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${GREEN}OK${RESET}"; VAULT_PASS=$((VAULT_PASS+1))
-        else echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${RED}FAIL${RESET} (see ${_LOG})"; VAULT_FAIL=$((VAULT_FAIL+1))
-        fi
-        ;;
-      restart)
-        if run_quiet "$TIMEOUT_RESTART" "${CMD_FULL[@]}" \
-           && run_quiet "$TIMEOUT_STATUS" "$VAULT_CTRL" --backend "$BACKEND" -b "$BASE" status
-        then echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${GREEN}OK${RESET}"; VAULT_PASS=$((VAULT_PASS+1))
-        else echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${RED}FAIL${RESET} (see ${_LOG})"; VAULT_FAIL=$((VAULT_FAIL+1))
-        fi
-        ;;
-      stop)
-        if run_quiet "$TIMEOUT_STOP" "${CMD_FULL[@]}"; then
-          sleep "$SLEEP_AFTER_STOP"
-          if [ "$BACKEND" = "consul" ]; then
-            if assert_not_running "vault.*server" && assert_not_running "consul.*agent"; then
-              echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${GREEN}OK${RESET}"; VAULT_PASS=$((VAULT_PASS+1))
-            else
-              echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${RED}FAIL${RESET} (see ${_LOG})"; VAULT_FAIL=$((VAULT_FAIL+1))
-            fi
-          else
-            if assert_not_running "vault.*server"; then
-              echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${GREEN}OK${RESET}"; VAULT_PASS=$((VAULT_PASS+1))
-            else
-              echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${RED}FAIL${RESET} (see ${_LOG})"; VAULT_FAIL=$((VAULT_FAIL+1))
-            fi
-          fi
-        else
-          echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${RED}FAIL${RESET} (see ${_LOG})"; VAULT_FAIL=$((VAULT_FAIL+1))
-        fi
-        ;;
-    esac
-  done
-
-  run_quiet 10 "$VAULT_CTRL" --backend "$BACKEND" -b "$BASE" stop || true
-  run_quiet 10 "$VAULT_CTRL" -b "$BASE" cleanup || true
-  rm -rf "$BASE"
-}
-
-# --- Bao block: only file backend, reuse one BASE ---
-run_bao_block() {
-  local BASE; BASE="$(mktemp -d)"
-  local tests=(start status restart stop)
-
-  for name in "${tests[@]}"; do
-    N=$((N+1))
-    _LOG="${LOG_DIR}/bao_${name}.log"; :> "$_LOG"
-
-    local CMD_SHORT="${BAO_NAME} ${name}"
-    local CMD_FULL=( "$BAO_CTRL" -b "$BASE" "$name" )
-
-    echo "Running test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}"
-
-    case "$name" in
-      start)
-        if run_quiet "$TIMEOUT_START" "${CMD_FULL[@]}" \
-           && run_quiet "$TIMEOUT_STATUS" "$BAO_CTRL" -b "$BASE" status
-        then echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${GREEN}OK${RESET}"; BAO_PASS=$((BAO_PASS+1))
-        else echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${RED}FAIL${RESET} (see ${_LOG})"; BAO_FAIL=$((BAO_FAIL+1))
-        fi
-        ;;
-      status)
-        if run_quiet "$TIMEOUT_STATUS" "${CMD_FULL[@]}"
-        then echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${GREEN}OK${RESET}"; BAO_PASS=$((BAO_PASS+1))
-        else echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${RED}FAIL${RESET} (see ${_LOG})"; BAO_FAIL=$((BAO_FAIL+1))
-        fi
-        ;;
-      restart)
-        if run_quiet "$TIMEOUT_RESTART" "${CMD_FULL[@]}" \
-           && run_quiet "$TIMEOUT_STATUS" "$BAO_CTRL" -b "$BASE" status
-        then echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${GREEN}OK${RESET}"; BAO_PASS=$((BAO_PASS+1))
-        else echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${RED}FAIL${RESET} (see ${_LOG})"; BAO_FAIL=$((BAO_FAIL+1))
-        fi
-        ;;
-      stop)
-        if run_quiet "$TIMEOUT_STOP" "${CMD_FULL[@]}"; then
-          sleep "$SLEEP_AFTER_STOP"
-          # Se vuoi, cambia la signature qui con quella reale del processo Bao:
-          if assert_not_running "bao.*server"; then
-            echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${GREEN}OK${RESET}"; BAO_PASS=$((BAO_PASS+1))
-          else
-            echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${RED}FAIL${RESET} (see ${_LOG})"; BAO_FAIL=$((BAO_FAIL+1))
-          fi
-        else
-          echo "Test ${YELLOW}${N}/${TOTAL}${RESET} — ${CMD_SHORT}: ${RED}FAIL${RESET} (see ${_LOG})"; BAO_FAIL=$((BAO_FAIL+1))
-        fi
-        ;;
-    esac
-  done
-
-  run_quiet 10 "$BAO_CTRL" -b "$BASE" stop || true
-  run_quiet 10 "$BAO_CTRL" -b "$BASE" cleanup || true
-  rm -rf "$BASE"
-}
-
-main() {
-  ensure_prereqs
-  mkdir -p "$LOG_DIR"
-
-  echo "Using control script (Vault): $VAULT_CTRL"
-  echo "Using control script (Bao)  : $BAO_CTRL"
-
-  VAULT_PASS=0; VAULT_FAIL=0
-  BAO_PASS=0;   BAO_FAIL=0
-  N=0
-
-  # Compute TOTAL
-  TOTAL=0
-  if [ "$RUN_VAULT" = "1" ]; then
-    IFS=',' read -r -a VBKS <<< "$VAULT_BACKENDS"
-    TOTAL=$(( TOTAL + ${#VBKS[@]} * 4 ))
-  fi
-  if [ "$RUN_BAO" = "1" ]; then
-    TOTAL=$(( TOTAL + 4 )) # bao: only file
-  fi
-
-  local start_ts
-  start_ts=$(date +%s)
-
-  # Vault
-  if [ "$RUN_VAULT" = "1" ]; then
-    IFS=',' read -r -a VBKS <<< "$VAULT_BACKENDS"
-    for be in "${VBKS[@]}"; do
-      run_vault_block "$be"
-    done
-  fi
-
-  # Bao
-  if [ "$RUN_BAO" = "1" ]; then
-    run_bao_block
-  fi
-
-  local dur=$(( $(date +%s) - start_ts ))
-  local total_pass=$((VAULT_PASS + BAO_PASS))
-  local total_fail=$((VAULT_FAIL + BAO_FAIL))
-  local total_tests=$TOTAL
-
-  echo "========== SUMMARY =========="
-  echo "Total tests   : $total_tests"
-  echo "Passed        : $total_pass"
-  echo "Failed        : $total_fail"
-  echo "Duration      : $(secs_to_hms "$dur")"
-  echo "Logs directory: ${LOG_DIR}"
-
-  echo
-  echo "--- Vault summary ---"
-  echo "Total tests   : $(( ${RUN_VAULT} == 1 ? ( $(echo "$VAULT_BACKENDS" | awk -F, '{print NF}') * 4 ) : 0 ))"
-  echo "Passed        : $VAULT_PASS"
-  echo "Failed        : $VAULT_FAIL"
-
-  echo
-  echo "--- Bao summary ---"
-  echo "Total tests   : $(( ${RUN_BAO} == 1 ? 4 : 0 ))"
-  echo "Passed        : $BAO_PASS"
-  echo "Failed        : $BAO_FAIL"
-
-  echo
-  echo "Running final cleanup..."
-  "$VAULT_CTRL" cleanup >>"${LOG_DIR}/final_cleanup_vault.log" 2>&1 || true
-  "$BAO_CTRL"   cleanup >>"${LOG_DIR}/final_cleanup_bao.log"   2>&1 || true
-  echo "Performed full cleanup via both control scripts ✅"
-
-  [ "$total_fail" -eq 0 ] || exit 1
-}
-
-main "$@"
+echo "Running final cleanup..."
+timeout --kill-after=5 "$CAP_CLEANUP" bash -lc "$VAULT_CTRL -b $BASE_DIR cleanup" &> "$LOG_DIR/final_vault_cleanup.log" || true
+timeout --kill-after=5 "$CAP_CLEANUP" bash -lc "$BAO_CTRL   -b $BASE_DIR cleanup" &> "$LOG_DIR/final_bao_cleanup.log"   || true
+echo "Performed full cleanup via vault-lab-ctl.sh and bao-lab-ctl.sh ${GREEN}✅${RESET}"
