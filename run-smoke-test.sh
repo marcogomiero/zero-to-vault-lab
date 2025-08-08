@@ -7,7 +7,12 @@ BAO_CTRL="/mnt/c/Users/gomiero1/PycharmProjects/PythonProject/zero-to-vault-lab/
 BASE_DIR="/mnt/c/Users/gomiero1/PycharmProjects/PythonProject/zero-to-vault-lab"
 LOG_DIR="./smoke-logs"
 
+# Vault readiness target (HTTP)
 VAULT_ADDR="${VAULT_ADDR:-http://127.0.0.1:8200}"
+# Bao readiness target (HTTPS self-signed)
+BAO_ADDR="${BAO_ADDR:-https://127.0.0.1:8200}"
+BAO_SKIP_VERIFY="${BAO_SKIP_VERIFY:-1}"
+
 CONSUL_HTTP_ADDR="${CONSUL_HTTP_ADDR:-http://127.0.0.1:8500}"
 
 # Readiness behavior: 1=readiness failure -> SKIP (non-fatal), 0=FAIL
@@ -15,6 +20,7 @@ READINESS_SOFT="${READINESS_SOFT:-1}"
 
 # Readiness poll caps
 MAX_WAIT_VAULT="${MAX_WAIT_VAULT:-60}"
+MAX_WAIT_BAO="${MAX_WAIT_BAO:-60}"
 MAX_WAIT_CONSUL="${MAX_WAIT_CONSUL:-60}"
 SLEEP_STEP="${SLEEP_STEP:-0.5}"
 
@@ -46,7 +52,18 @@ short_cmd() {
     | sed "s|$BASE_DIR|BASE_DIR|g"
 }
 port_open() { (echo >"/dev/tcp/$1/$2") >/dev/null 2>&1 || return 1; }
+
+# Consul readiness
 consul_ready() { curl -fsS "${CONSUL_HTTP_ADDR}/v1/status/leader" 2>/dev/null | grep -qE '".+:.+"' || return 1; }
+wait_consul_ready() {
+  local deadline=$(( $(date +%s) + MAX_WAIT_CONSUL ))
+  while (( $(date +%s) < deadline )); do
+    if port_open 127.0.0.1 8500 && consul_ready; then return 0; fi
+    sleep "$SLEEP_STEP"
+  done; return 1
+}
+
+# Vault readiness (HTTP)
 vault_health_ok() {
   local code; code=$(curl -fsS -o /dev/null -w '%{http_code}' "${VAULT_ADDR}/v1/sys/health" 2>/dev/null || echo "")
   [[ "$code" == "200" || "$code" == "429" ]] || return 1
@@ -58,14 +75,24 @@ wait_vault_ready() {
     sleep "$SLEEP_STEP"
   done; return 1
 }
-wait_consul_ready() {
-  local deadline=$(( $(date +%s) + MAX_WAIT_CONSUL ))
+
+# Bao readiness (HTTPS, self-signed)
+bao_health_ok() {
+  local curl_flags=(-fsS -o /dev/null -w '%{http_code}')
+  [ "$BAO_SKIP_VERIFY" = "1" ] && curl_flags=(-k "${curl_flags[@]}")
+  local code; code=$(curl "${curl_flags[@]}" "${BAO_ADDR}/v1/sys/health" 2>/dev/null || echo "")
+  [[ "$code" == "200" || "$code" == "429" ]] || return 1
+}
+wait_bao_ready() {
+  local deadline=$(( $(date +%s) + MAX_WAIT_BAO ))
   while (( $(date +%s) < deadline )); do
-    if port_open 127.0.0.1 8500 && consul_ready; then return 0; fi
+    if port_open 127.0.0.1 8200 && bao_health_ok; then return 0; fi
     sleep "$SLEEP_STEP"
   done; return 1
 }
+
 assert_stopped(){ ! pgrep -f "$1" >/dev/null 2>&1; }
+
 pick_cap() {
   local scmd="$1"
   case "$scmd" in
@@ -97,7 +124,7 @@ TESTS=(
   "$VAULT_CTRL --backend consul -b $BASE_DIR restart"
   "$VAULT_CTRL --backend consul -b $BASE_DIR stop"
   "$VAULT_CTRL --backend consul -b $BASE_DIR cleanup"
-  # Bao (file-only)
+  # Bao (file-only, https)
   "$BAO_CTRL -b $BASE_DIR start"
   "$BAO_CTRL -b $BASE_DIR status"
   "$BAO_CTRL -b $BASE_DIR restart"
@@ -153,7 +180,7 @@ for i in "${!TESTS[@]}"; do
           fi
           ;;
         "bao-lab-ctl.sh "*start|"bao-lab-ctl.sh "*restart)
-          if wait_vault_ready; then result="OK"; else result=$([ "$READINESS_SOFT" = "1" ] && echo "SKIP" || echo "FAIL"); fi
+          if wait_bao_ready; then result="OK"; else result=$([ "$READINESS_SOFT" = "1" ] && echo "SKIP" || echo "FAIL"); fi
           ;;
         "bao-lab-ctl.sh "*stop|"bao-lab-ctl.sh "*cleanup)
           if assert_stopped "bao.*server"; then result="OK"; else result="FAIL"; fi
@@ -184,7 +211,7 @@ for i in "${!TESTS[@]}"; do
     rc=$?
   fi
 
-  # SAFE increments (don’t trip set -e)
+  # SAFE increments
   if [[ "$scmd" == *"bao-lab-ctl.sh"* ]]; then
     if   [ $rc -eq 0 ];  then : $((pass_all+=1)); : $((pass_bao+=1))
     elif [ $rc -eq 20 ]; then : $((skip_all+=1)); : $((skip_bao+=1))
