@@ -1430,6 +1430,7 @@ main() {
             start|stop|restart|reset|status|cleanup)
                 command="$arg"
                 ;;
+            # NOTE: non setto command qui per shell/with-vault perché li gestiamo prima del backend prompt
         esac
         i=$((i+1))
     done
@@ -1444,20 +1445,45 @@ main() {
         LAB_CONFIG_FILE="$VAULT_DIR/vault-lab-ctl.conf"
     fi
 
+    # ====== COMANDI CHE NON RICHIEDONO BACKEND: gestiti SUBITO e si esce ======
+    if [[ "$1" == "shell" ]]; then
+        export VAULT_ADDR="http://127.0.0.1:8200"
+        [ -f "$VAULT_DIR/root_token.txt" ] && export VAULT_TOKEN="$(cat "$VAULT_DIR/root_token.txt")"
+        # dedup BIN_DIR dal PATH e prepend
+        PATH="$(echo "$PATH" | awk -v RS=: -v ORS=: -v drop="$BIN_DIR" '$0!=drop' | sed 's/:$//')"
+        export PATH="$BIN_DIR:$PATH"
+        echo "🔒 Lab shell attiva. Digita 'exit' per uscire."
+        exec "${SHELL:-bash}" -i
+        return 0
+    fi
+
+    if [[ "$1" == "with-vault" ]]; then
+        shift
+        (
+          export VAULT_ADDR="http://127.0.0.1:8200"
+          [ -f "$VAULT_DIR/root_token.txt" ] && export VAULT_TOKEN="$(cat "$VAULT_DIR/root_token.txt")"
+          PATH="$(echo "$PATH" | awk -v RS=: -v ORS=: -v drop="$BIN_DIR" '$0!=drop' | sed 's/:$//')"
+          export PATH="$BIN_DIR:$PATH"
+          "$@"
+        )
+        return $?
+    fi
+    # ====== FINE SHORT-CIRCUIT PER shell / with-vault ======
+
     if [ "$COLORS_ENABLED" = false ]; then GREEN=''; YELLOW=''; RED=''; NC=''; fi
 
-    # Load backend type from config file for all commands that are not 'start' or 'reset'
+    # Load backend type from config file per comandi diversi da 'start' o 'reset'
     if [[ "$command" != "start" && "$command" != "reset" ]]; then
         load_backend_type_from_config
     fi
 
-    # Check if backend was set via CLI argument, if not, prompt the user only for 'start' or 'reset'
+    # Se il backend non è stato passato via CLI, chiedilo solo per 'start' o 'reset'
     if [ "$BACKEND_TYPE_SET_VIA_ARG" = false ] && [[ "$command" == "start" || "$command" == "reset" ]]; then
         echo -e "\n${YELLOW}No backend specified via command line argument (--backend).${NC}"
         while true; do
             echo -e "${YELLOW}Please choose a storage backend for Vault (file or consul, default: file):${NC}"
             read -p "> " choice
-            choice=${choice:-file} # Default to 'file' if input is empty
+            choice=${choice:-file} # default 'file'
             case "$choice" in
                 file|File|FILE)
                     BACKEND_TYPE="file"
