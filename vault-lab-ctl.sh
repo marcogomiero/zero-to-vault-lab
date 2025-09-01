@@ -27,7 +27,7 @@
 
 # --- Global Configuration ---
 # Default base directory for the Vault lab. Can be overridden by --base-dir option.
-BASE_DIR="/mnt/c/Users/gomiero1/PycharmProjects/PythonProject/zero-to-vault-lab"
+BASE_DIR="/mnt/c/Users/gomiero1/PycharmProjects/PythonProject/zero-to-vault-lab-v2"
 BIN_DIR="$BASE_DIR/bin" # Directory where Vault and Consul binaries will be stored
 VAULT_DIR="$BASE_DIR/vault-lab" # Working directory for Vault data, config, and keys
 CONSUL_DIR="$BASE_DIR/consul-lab" # Working directory for Consul data and config
@@ -138,7 +138,6 @@ check_and_install_prerequisites() {
     pkg_map["jq"]="jq"
     pkg_map["unzip"]="unzip"
     pkg_map["lsof"]="lsof"
-    pkg_map["terraform"]="terraform"
 
     for cmd_name in "${!pkg_map[@]}"; do
         if ! command -v "${pkg_map[$cmd_name]}" &> /dev/null; then
@@ -572,18 +571,6 @@ stop_lab_environment() {
         stop_consul
     fi
     log_info "Vault lab environment stopped. 👋"
-}
-
-# --- Function: Restart the entire lab environment ---
-restart_lab_environment() {
-    log_info "\n=================================================="
-    log_info "RESTARTING VAULT LAB ENVIRONMENT (Backend: $BACKEND_TYPE)"
-    log_info "=================================================="
-    stop_lab_environment
-    log_info "Waiting a moment before starting Vault again..."
-    sleep 3
-    start_lab_environment_core # Calls the core logic that was in 'start' command
-    log_info "Vault lab environment restarted. 🔄"
 }
 
 # --- Function: Clean up previous environment ---
@@ -1201,7 +1188,7 @@ check_lab_status() {
     if [ "$vault_is_running" = true ]; then
         log_info "Vault process (PID: $vault_pid) is running. Attempting to get Vault server status..."
         local VAULT_STATUS_OUTPUT
-        if VAULT_STATUS_OUTPUT=$(get_vault_status_json); then
+        if VAULT_STATUS_OUTPUT=$(get_vault_status); then
             log_info "Vault server is running. Details:"
             local vault_initialized=$(echo "$VAULT_STATUS_OUTPUT" | jq -r '.initialized')
             local vault_sealed=$(echo "$VAULT_STATUS_OUTPUT" | jq -r '.sealed')
