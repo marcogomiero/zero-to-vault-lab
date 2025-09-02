@@ -55,6 +55,19 @@ YELLOW='\033[0;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+# --- Trap for cleanup on script exit or interruption ---
+setup_cleanup_trap() {
+    trap 'cleanup_on_exit' EXIT INT TERM
+}
+
+cleanup_on_exit() {
+    local exit_code=$?
+    if [[ $exit_code -ne 0 ]]; then
+        log_warn "Script interrupted or failed with exit code $exit_code. Performing cleanup..."
+        stop_lab_environment
+    fi
+}
+
 # --- Logging Functions ---
 # Logs informational messages in green
 log_info() {
@@ -93,6 +106,8 @@ display_help() {
     echo "  reset              Fully resets the lab (cleanup + fresh start)."
     echo "  status             Show status."
     echo "  cleanup            Remove all lab data and stop running instances."
+    echo "  shell              Start a shell with VAULT_* environment variables set."
+    echo "  with-vault <cmd>   Run a command with VAULT_* environment variables set."
     echo ""
     exit 0
 }
@@ -121,6 +136,36 @@ load_backend_type_from_config() {
     fi
 }
 
+# --- Function: Validate ports are available ---
+validate_ports_available() {
+    local vault_port=8200
+    local consul_port=8500
+
+    # Check if Vault port is in use
+    if lsof -Pi :$vault_port -sTCP:LISTEN -t >/dev/null ; then
+        log_error "La porta $vault_port è già in uso. Chiudi il processo o usa una porta diversa."
+    fi
+
+    # Check if Consul port is in use (only if using Consul backend)
+    if [ "$BACKEND_TYPE" == "consul" ] && lsof -Pi :$consul_port -sTCP:LISTEN -t >/dev/null ; then
+        log_error "La porta $consul_port è già in uso. Chiudi il processo o usa una porta diversa."
+    fi
+
+    log_info "Port validation successful - ports $vault_port and $consul_port are available. ✅"
+}
+
+# --- Function: Validate directories are writable ---
+validate_directories() {
+    if [ ! -w "$BASE_DIR" ]; then
+        log_error "La directory base $BASE_DIR non è scrivibile. Controlla i permessi."
+    fi
+
+    if [ ! -w "$(dirname "$BIN_DIR")" ]; then
+        log_error "La directory padre di $BIN_DIR non è scrivibile. Controlla i permessi."
+    fi
+
+    log_info "Directory validation successful - all paths are writable. ✅"
+}
 
 # --- Function: Check and Install Prerequisites ---
 check_and_install_prerequisites() {
@@ -233,6 +278,18 @@ check_and_install_prerequisites() {
 # --- Function: Stop Vault process by PID file ---
 stop_vault() {
     log_info "Attempting to stop Vault server..."
+
+    # Cerca processi Vault in esecuzione
+    local vault_pids=$(pgrep -f "vault server" || true)
+
+    if [ -n "$vault_pids" ]; then
+        log_info "Trovati processi Vault esistenti: $vault_pids. Terminazione..."
+        kill -TERM $vault_pids 2>/dev/null || true
+        sleep 2
+        # Force kill se ancora in esecuzione
+        kill -9 $vault_pids 2>/dev/null || true
+    fi
+
     if [ -f "$LAB_VAULT_PID_FILE" ]; then
         local pid=$(cat "$LAB_VAULT_PID_FILE")
         if ps -p "$pid" > /dev/null; then
@@ -257,12 +314,13 @@ stop_vault() {
     else
         log_info "No Vault PID file found ($LAB_VAULT_PID_FILE)."
     fi
-    # Also check if anything else is on 8200
+
+    # Pulizia aggiuntiva della porta
     local vault_port=$(echo "$VAULT_ADDR" | cut -d':' -f3)
-    local lingering_pid=$(lsof -ti:"$vault_port" 2>/dev/null)
+    local lingering_pid=$(lsof -ti:"$vault_port" 2>/dev/null || true)
     if [ -n "$lingering_pid" ]; then
-        log_warn "Found lingering process(es) on Vault port $vault_port (PIDs: $lingering_pid). Attempting to kill."
-        kill -9 "$lingering_pid" >/dev/null 2>&1
+        log_warn "Processi residui sulla porta $vault_port: $lingering_pid. Terminazione..."
+        kill -9 "$lingering_pid" 2>/dev/null || true
         sleep 1
         if lsof -ti:"$vault_port" >/dev/null; then
              log_error "Could not clear port $vault_port. Manual intervention required. 🛑"
@@ -275,6 +333,18 @@ stop_vault() {
 # --- Function: Stop Consul process by PID file ---
 stop_consul() {
     log_info "Attempting to stop Consul server..."
+
+    # Cerca processi Consul in esecuzione
+    local consul_pids=$(pgrep -f "consul agent" || true)
+
+    if [ -n "$consul_pids" ]; then
+        log_info "Trovati processi Consul esistenti: $consul_pids. Terminazione..."
+        kill -TERM $consul_pids 2>/dev/null || true
+        sleep 2
+        # Force kill se ancora in esecuzione
+        kill -9 $consul_pids 2>/dev/null || true
+    fi
+
     if [ -f "$LAB_CONSUL_PID_FILE" ]; then
         local pid=$(cat "$LAB_CONSUL_PID_FILE")
         if ps -p "$pid" > /dev/null; then
@@ -299,12 +369,13 @@ stop_consul() {
     else
         log_info "No Consul PID file found ($LAB_CONSUL_PID_FILE)."
     fi
-    # Also check if anything else is on 8500
+
+    # Pulizia aggiuntiva della porta
     local consul_port=$(echo "$CONSUL_ADDR" | cut -d':' -f3)
-    local lingering_pid=$(lsof -ti:"$consul_port" 2>/dev/null)
+    local lingering_pid=$(lsof -ti:"$consul_port" 2>/dev/null || true)
     if [ -n "$lingering_pid" ]; then
-        log_warn "Found lingering process(es) on Consul port $consul_port (PIDs: $lingering_pid). Attempting to kill."
-        kill -9 "$lingering_pid" >/dev/null 2>&1
+        log_warn "Processi residui sulla porta $consul_port: $lingering_pid. Terminazione..."
+        kill -9 "$lingering_pid" 2>/dev/null || true
         sleep 1
         if lsof -ti:"$consul_port" >/dev/null; then
              log_error "Could not clear port $consul_port. Manual intervention required. 🛑"
@@ -332,6 +403,9 @@ download_latest_vault_binary() {
     fi
 
     local temp_dir=$(mktemp -d)
+    # Aggiungi trap locale per pulire la directory temp anche in caso di errore
+    trap 'rm -rf "$temp_dir"; log_warn "Download interrotto. Temp directory cleaned."' EXIT INT TERM
+
     local success=1
 
     log_info "=================================================="
@@ -372,6 +446,7 @@ download_latest_vault_binary() {
             log_info "Current Vault binary (v$current_version) is already the latest version available."
             log_info "No download or update needed. Existing binary will be used."
             rm -rf "$temp_dir"
+            trap - EXIT INT TERM  # Remove local trap
             return 0
         else
             log_info "Current Vault binary is v$current_version. Latest available version is v$latest_version."
@@ -388,6 +463,7 @@ download_latest_vault_binary() {
     if ! curl -fsSL -o "$zip_file" "$download_url"; then
         log_error "Error: Failed to download Vault from $download_url. Check internet connection or URL."
         rm -rf "$temp_dir"
+        trap - EXIT INT TERM  # Remove local trap
         return 1
     fi
 
@@ -395,6 +471,7 @@ download_latest_vault_binary() {
     if ! unzip -o "$zip_file" -d "$temp_dir" >/dev/null; then
         log_error "Error: Failed to extract the zip file. Ensure 'unzip' is installed and functional."
         rm -rf "$temp_dir"
+        trap - EXIT INT TERM  # Remove local trap
         return 1
     fi
 
@@ -410,6 +487,7 @@ download_latest_vault_binary() {
     fi
 
     rm -rf "$temp_dir" # Clean up temporary directory
+    trap - EXIT INT TERM  # Remove local trap
     return $success
 }
 
@@ -431,6 +509,9 @@ download_latest_consul_binary() {
     fi
 
     local temp_dir=$(mktemp -d)
+    # Aggiungi trap locale per pulire la directory temp anche in caso di errore
+    trap 'rm -rf "$temp_dir"; log_warn "Download interrotto. Temp directory cleaned."' EXIT INT TERM
+
     local success=1
 
     log_info "=================================================="
@@ -443,6 +524,7 @@ download_latest_consul_binary() {
     if [ -z "$consul_releases_json" ]; then
         log_error "Error: 'curl' received no data from HashiCorp URL. Check internet connection or URL: https://releases.hashicorp.com/consul/index.json"
         rm -rf "$temp_dir"
+        trap - EXIT INT TERM  # Remove local trap
         return 1
     fi
 
@@ -456,6 +538,7 @@ download_latest_consul_binary() {
     if [ -z "$latest_version" ]; then
         log_error "Error: Could not determine the latest Consul version. JSON structure might have changed or no match found."
         rm -rf "$temp_dir"
+        trap - EXIT INT TERM  # Remove local trap
         return 1
     fi
 
@@ -476,6 +559,7 @@ download_latest_consul_binary() {
             log_info "Current Consul binary (v$current_version) is already the latest version available."
             log_info "No download or update needed. Existing binary will be used."
             rm -rf "$temp_dir"
+            trap - EXIT INT TERM  # Remove local trap
             return 0
         else
             log_info "Current Consul binary is v$current_version. Latest available version is v$latest_version."
@@ -492,6 +576,7 @@ download_latest_consul_binary() {
     if ! curl -fsSL -o "$zip_file" "$download_url"; then
         log_error "Error: Failed to download Consul from $download_url. Check internet connection or URL."
         rm -rf "$temp_dir"
+        trap - EXIT INT TERM  # Remove local trap
         return 1
     fi
 
@@ -499,6 +584,7 @@ download_latest_consul_binary() {
     if ! unzip -o "$zip_file" -d "$temp_dir" >/dev/null; then
         log_error "Error: Failed to extract the zip file. Ensure 'unzip' is installed and functional."
         rm -rf "$temp_dir"
+        trap - EXIT INT TERM  # Remove local trap
         return 1
     fi
 
@@ -514,6 +600,7 @@ download_latest_consul_binary() {
     fi
 
     rm -rf "$temp_dir" # Clean up temporary directory
+    trap - EXIT INT TERM  # Remove local trap
     return $success
 }
 
@@ -521,43 +608,51 @@ download_latest_consul_binary() {
 # --- Function: Wait for Vault to be UP and respond to APIs ---
 wait_for_vault_up() {
   local addr=$1
-  local timeout=30
+  local timeout=${2:-30} # Timeout configurabile, default 30 secondi
   local elapsed=0
+  local wait_interval=1
 
-  log_info "Waiting for Vault to listen on $addr..."
+  log_info "In attesa che Vault sia raggiungibile su $addr (timeout: ${timeout}s)..."
+
   while [[ $elapsed -lt $timeout ]]; do
-    # Check if Vault's health endpoint (seal-status) returns 200 OK
     if curl -s -o /dev/null -w "%{http_code}" "$addr/v1/sys/seal-status" | grep -q "200"; then
-      log_info "Vault is listening and responding to APIs after $elapsed seconds. ✅"
+      log_info "Vault raggiungibile dopo ${elapsed}s ✅"
       return 0
     fi
-    sleep 1
-    echo -n "." # Progress indicator
-    ((elapsed++))
+
+    sleep $wait_interval
+    echo -n "."
+    elapsed=$((elapsed + wait_interval))
   done
-  log_error "Vault did not become reachable after $timeout seconds. Check logs ($VAULT_DIR/vault.log). ❌"
-  return 1 # Indicate failure
+
+  log_error "Timeout: Vault non raggiungibile dopo $timeout secondi ❌"
+  log_info "Controlla i log: tail -f $VAULT_DIR/vault.log"
+  return 1
 }
 
 # --- Function: Wait for Consul to be UP and respond to APIs ---
 wait_for_consul_up() {
   local addr=$1
-  local timeout=30
+  local timeout=${2:-30} # Timeout configurabile, default 30 secondi
   local elapsed=0
+  local wait_interval=1
 
-  log_info "Waiting for Consul to listen on $addr..."
+  log_info "In attesa che Consul sia raggiungibile su $addr (timeout: ${timeout}s)..."
+
   while [[ $elapsed -lt $timeout ]]; do
-    # Check if Consul's health endpoint returns 200 OK
     if curl -s -o /dev/null -w "%{http_code}" "$addr/v1/status/leader" | grep -q "200"; then
-      log_info "Consul is listening and responding to APIs after $elapsed seconds. ✅"
+      log_info "Consul raggiungibile dopo ${elapsed}s ✅"
       return 0
     fi
-    sleep 1
-    echo -n "." # Progress indicator
-    ((elapsed++))
+
+    sleep $wait_interval
+    echo -n "."
+    elapsed=$((elapsed + wait_interval))
   done
-  log_error "Consul did not become reachable after $timeout seconds. Check logs ($CONSUL_DIR/consul.log). ❌"
-  return 1 # Indicate failure
+
+  log_error "Timeout: Consul non raggiungibile dopo $timeout secondi ❌"
+  log_info "Controlla i log: tail -f $CONSUL_DIR/consul.log"
+  return 1
 }
 
 
@@ -1329,6 +1424,10 @@ display_final_info() {
 
 # --- Core logic for starting the lab, separated for restart command ---
 start_lab_environment_core() {
+    log_info "Validating directories and ports..."
+    validate_directories
+    validate_ports_available
+
     mkdir -p "$BIN_DIR" || log_error "Failed to create directory $BIN_DIR. Check permissions."
     download_latest_vault_binary "$BIN_DIR"
     log_info "=================================================="
@@ -1373,6 +1472,15 @@ restart_lab_environment() {
     log_info "Vault lab environment restarted and unsealed. 🔄"
 }
 
+# --- Function: Reset lab environment ---
+reset_lab_environment() {
+    log_info "\n=================================================="
+    log_info "RESETTING VAULT LAB ENVIRONMENT (Backend: $BACKEND_TYPE)"
+    log_info "=================================================="
+    cleanup_previous_environment
+    start_lab_environment_core
+}
+
 # --- Main ---
 main() {
     if [ ! -t 1 ]; then COLORS_ENABLED=false; fi
@@ -1380,6 +1488,9 @@ main() {
     local command="start"
     local temp_base_dir=""
     local original_args=("$@")
+
+    # Setup cleanup trap
+    setup_cleanup_trap
 
     local i=1
     while [[ $i -le ${#original_args[@]} ]]; do

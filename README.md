@@ -5,9 +5,6 @@ zero-to-hashicorp-labs 🚀
 
 A collection of ready-to-use HashiCorp product laboratory environments, deployable with simple Bash scripts. This project is designed for developers, sysadmins, and anyone looking to explore or test HashiCorp's functionalities without the complexity of a manual, from-scratch configuration. It's your quick launchpad into the world of HashiCorp tools! 🌐
 
-This repository currently includes:
-
--   **Vault Lab:** A single-instance HashiCorp Vault environment with flexible storage backend options (file or Consul).
 
 HashiCorp Vault Lab (via `vault-lab-ctl.sh`)
 --------------------------------------------
@@ -101,6 +98,8 @@ Follow these simple steps to start and configure your Vault environment:
 
     -   `--backend <type>`: Choose Vault storage backend: `file` (default) or `consul`. This option takes precedence over the saved configuration. This option is crucial and should be used with `start`, `stop`, `restart`, `status`, and `cleanup` to ensure correct management of the chosen backend (especially `consul`).
 
+    - And many more (`vault-lab-ctl.sh -h` for a complete list)
+
     **Script Behavior (when running `start`):**
 
     -   If it detects a previous Vault environment (`vault-lab/`), it will ask you if you want to clean it up and start from scratch (`y/N`).
@@ -144,7 +143,10 @@ This section tracks the main milestones and features introduced in different ver
 
 ### Vault Lab (`vault-lab-ctl.sh`)
 
-**v1.4.1 (Current)**
+**v1.4.2 (Current)**
+- Several code improvment and bug fixing
+
+**v1.4.1**
 - Added `restart` command to vault-lab-ctl.sh:
   * Restarts Vault (and Consul if applicable) without reconfiguring
   * Automatically unseals Vault after restart
