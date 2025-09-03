@@ -1,4 +1,4 @@
-zero-to-hashicorp-labs 🚀
+zero-to-hashicorp-lab 🚀
 =========================
 
 ======================

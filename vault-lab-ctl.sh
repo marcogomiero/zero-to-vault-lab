@@ -26,34 +26,62 @@
 #   For more options: `./vault-lab-ctl.sh --help`
 
 # --- Global Configuration ---
-# Default base directory for the Vault lab. Can be overridden by --base-dir option.
 BASE_DIR="/mnt/c/Users/gomiero1/PycharmProjects/PythonProject/zero-to-vault-lab-v2"
-BIN_DIR="$BASE_DIR/bin" # Directory where Vault and Consul binaries will be stored
-VAULT_DIR="$BASE_DIR/vault-lab" # Working directory for Vault data, config, and keys
-CONSUL_DIR="$BASE_DIR/consul-lab" # Working directory for Consul data and config
-VAULT_ADDR="http://127.0.0.1:8200" # Default Vault address for the lab environment
-CONSUL_ADDR="http://127.0.0.1:8500" # Default Consul address for the lab environment
-LAB_VAULT_PID_FILE="$VAULT_DIR/vault.pid" # File to store the PID of the running Vault server
-LAB_CONSUL_PID_FILE="$CONSUL_DIR/consul.pid" # File to store the PID of the running Consul server
-LAB_CONFIG_FILE="$VAULT_DIR/vault-lab-ctl.conf" # File to store persistent lab configuration
+BIN_DIR="$BASE_DIR/bin"
+VAULT_DIR="$BASE_DIR/vault-lab"
+CONSUL_DIR="$BASE_DIR/consul-lab"
+VAULT_ADDR="http://127.0.0.1:8200"
+CONSUL_ADDR="http://127.0.0.1:8500"
+LAB_VAULT_PID_FILE="$VAULT_DIR/vault.pid"
+LAB_CONSUL_PID_FILE="$CONSUL_DIR/consul.pid"
+LAB_CONFIG_FILE="$VAULT_DIR/vault-lab-ctl.conf"
 
-# Path for the >>>>Audit Log (default for the lab is /dev/null for simplicity)
-# To enable auditing to a real file, change this variable. Example:
-# AUDIT_LOG_PATH="$VAULT_DIR/vault_audit.log"
+
 AUDIT_LOG_PATH="/dev/null"
 
-# --- Global Flags ---
-FORCE_CLEANUP_ON_START=false # Flag to force a clean setup, removing existing data
-VERBOSE_OUTPUT=false # Flag to enable more detailed output for debugging
-COLORS_ENABLED=true # Flag to control colored output. Default to true.
-BACKEND_TYPE_SET_VIA_ARG=false # Flag to track if backend type was set by arg
-BACKEND_TYPE="file" # Default backend type for Vault (file or consul)
 
-# --- Colors for better output (initial setup) ---
+FORCE_CLEANUP_ON_START=false
+VERBOSE_OUTPUT=false
+COLORS_ENABLED=true
+BACKEND_TYPE_SET_VIA_ARG=false
+BACKEND_TYPE="file"
+
+
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 RED='\033[0;31m'
-NC='\033[0m' # No Color
+NC='\033[0m'
+
+
+# --- Helpers OS/Binary & Logging ---
+apply_color_settings() {
+    if [ "$COLORS_ENABLED" != true ]; then
+    GREEN=""; YELLOW=""; RED=""; NC=""
+    fi
+}
+
+is_windows() {
+    case "$(uname -s)" in
+      *MINGW*|*MSYS*|*CYGWIN*) return 0 ;;
+      *) [ -n "$OS" ] && [ "$OS" = "Windows_NT" ] && return 0 || return 1 ;;
+    esac
+}
+
+get_exe() {
+    local name="$1"
+    if is_windows; then
+      echo "$BIN_DIR/${name}.exe"
+    else
+      echo "$BIN_DIR/${name}"
+    fi
+}
+
+get_vault_exe() { get_exe "vault"; }
+get_consul_exe() { get_exe "consul"; }
+
+log_debug() {
+    [ "$VERBOSE_OUTPUT" = true ] && echo -e "${GREEN}[DEBUG]${NC} $*"
+}
 
 # --- Trap for cleanup on script exit or interruption ---
 setup_cleanup_trap() {
@@ -63,27 +91,15 @@ setup_cleanup_trap() {
 cleanup_on_exit() {
     local exit_code=$?
     if [[ $exit_code -ne 0 ]]; then
-        log_warn "Script interrupted or failed with exit code $exit_code. Performing cleanup..."
-        stop_lab_environment
+    log_warn "Script interrupted or failed with exit code $exit_code. Performing cleanup..."
+    stop_lab_environment
     fi
 }
 
 # --- Logging Functions ---
-# Logs informational messages in green
-log_info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
-}
-
-# Logs warning messages in yellow
-log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1" >&2
-}
-
-# Logs error messages in red and exits with an error code
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1" >&2
-    exit 1
-}
+log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
 
 # --- Function: Display Help Message ---
 display_help() {
@@ -92,24 +108,48 @@ display_help() {
     echo "This script deploys a HashiCorp Vault lab environment."
     echo ""
     echo "Options:"
-    echo "  -c, --clean        Forces a clean setup, removing any existing Vault/Consul data."
-    echo "  -h, --help         Display this help message."
-    echo "  -v, --verbose      Enable verbose output."
-    echo "  --no-color         Disable colored output."
-    echo "  --backend <type>   Choose backend: 'file' or 'consul'."
-    echo "  -b, --base-directory <path>  Set base directory."
+    echo "  -c, --clean                    Force clean setup (wipe existing data before start)."
+    echo "  -h, --help                     Show this help and exit."
+    echo "  -v, --verbose                  Verbose output (enables [DEBUG] logs)."
+    echo "      --no-color                 Disable colored output."
+    echo "      --backend <file|consul>    Select storage backend."
+    echo "  -b, --base-directory <path>    Set base directory (BIN/VAULT/CONSUL dirs live here)."
     echo ""
     echo "Commands:"
-    echo "  start              (Default) Setup and start the Vault lab."
-    echo "  stop               Stop Vault and Consul."
-    echo "  restart            Restart Vault (and Consul if applicable) and unseal it, without reconfiguring."
-    echo "  reset              Fully resets the lab (cleanup + fresh start)."
-    echo "  status             Show status."
-    echo "  cleanup            Remove all lab data and stop running instances."
-    echo "  shell              Start a shell with VAULT_* environment variables set."
-    echo "  with-vault <cmd>   Run a command with VAULT_* environment variables set."
+    echo "  start                          Setup and start the lab (default)."
+    echo "  stop                           Stop Vault (and Consul if backend=consul)."
+    echo "  restart                        Restart services and unseal, without reconfiguring."
+    echo "  reset                          Full cleanup + fresh start."
+    echo "  status                         Show running status and health info."
+    echo "  cleanup                        Stop and remove all lab data and config folders."
+    echo "  shell                          Open an interactive shell with VAULT_* env pre-set and BIN on PATH."
+    echo "  with-vault <cmd>               Run a single command with VAULT_* env pre-set."
+    echo ""
+    echo "Examples:"
+    echo "  $0 --backend consul start"
+    echo "  $0 status"
+    echo "  $0 shell"
+    echo "  $0 with-vault \"vault kv get secret/test-secret\""
     echo ""
     exit 0
+}
+
+# --- Error-handling helpers (Step 8) ---
+safe_run() {
+  # Usage: safe_run "Error message" cmd arg1 arg2 ...
+  local msg="$1"; shift
+  if ! "$@"; then
+    log_error "$msg (cmd: $*)"
+  fi
+}
+
+warn_run() {
+  # Usage: warn_run "Warning message" cmd arg1 arg2 ...
+  local msg="$1"; shift
+  if ! "$@"; then
+    log_warn "$msg (cmd: $*)"
+    return 1
+  fi
 }
 
 # --- Function: Save backend type to config file ---
@@ -169,9 +209,7 @@ validate_directories() {
 
 # --- Function: Check and Install Prerequisites ---
 check_and_install_prerequisites() {
-    log_info "=================================================="
     log_info "CHECKING PREREQUISITES"
-    log_info "=================================================="
 
     local missing_pkgs=()
     local install_cmd=""
@@ -272,117 +310,6 @@ check_and_install_prerequisites() {
             log_error "Exiting. Please install missing prerequisites manually. 👋"
         fi
     fi
-    log_info "=================================================="
-}
-
-# --- Function: Stop Vault process by PID file ---
-stop_vault() {
-    log_info "Attempting to stop Vault server..."
-
-    # Cerca processi Vault in esecuzione
-    local vault_pids=$(pgrep -f "vault server" || true)
-
-    if [ -n "$vault_pids" ]; then
-        log_info "Trovati processi Vault esistenti: $vault_pids. Terminazione..."
-        kill -TERM $vault_pids 2>/dev/null || true
-        sleep 2
-        # Force kill se ancora in esecuzione
-        kill -9 $vault_pids 2>/dev/null || true
-    fi
-
-    if [ -f "$LAB_VAULT_PID_FILE" ]; then
-        local pid=$(cat "$LAB_VAULT_PID_FILE")
-        if ps -p "$pid" > /dev/null; then
-            log_info "Found running Vault process with PID $pid. Attempting graceful shutdown..."
-            kill "$pid" >/dev/null 2>&1
-            sleep 5 # Give it some time to shut down
-            if ps -p "$pid" > /dev/null; then
-                log_warn "Vault process (PID: $pid) did not shut down gracefully. Forcing kill..."
-                kill -9 "$pid" >/dev/null 2>&1
-                sleep 1 # Give it a moment to release the port
-            fi
-            if ! ps -p "$pid" > /dev/null; then
-                log_info "Vault process (PID: $pid) stopped. ✅"
-                rm -f "$LAB_VAULT_PID_FILE"
-            else
-                log_error "Vault process (PID: $pid) could not be stopped. Manual intervention may be required. 🛑"
-            fi
-        else
-            log_info "No active Vault process found with PID $pid (from $LAB_VAULT_PID_FILE)."
-            rm -f "$LAB_VAULT_PID_FILE" # Clean up stale PID file
-        fi
-    else
-        log_info "No Vault PID file found ($LAB_VAULT_PID_FILE)."
-    fi
-
-    # Pulizia aggiuntiva della porta
-    local vault_port=$(echo "$VAULT_ADDR" | cut -d':' -f3)
-    local lingering_pid=$(lsof -ti:"$vault_port" 2>/dev/null || true)
-    if [ -n "$lingering_pid" ]; then
-        log_warn "Processi residui sulla porta $vault_port: $lingering_pid. Terminazione..."
-        kill -9 "$lingering_pid" 2>/dev/null || true
-        sleep 1
-        if lsof -ti:"$vault_port" >/dev/null; then
-             log_error "Could not clear port $vault_port. Manual intervention required. 🛑"
-        else
-            log_info "Lingering processes on port $vault_port cleared. ✅"
-        fi
-    fi
-}
-
-# --- Function: Stop Consul process by PID file ---
-stop_consul() {
-    log_info "Attempting to stop Consul server..."
-
-    # Cerca processi Consul in esecuzione
-    local consul_pids=$(pgrep -f "consul agent" || true)
-
-    if [ -n "$consul_pids" ]; then
-        log_info "Trovati processi Consul esistenti: $consul_pids. Terminazione..."
-        kill -TERM $consul_pids 2>/dev/null || true
-        sleep 2
-        # Force kill se ancora in esecuzione
-        kill -9 $consul_pids 2>/dev/null || true
-    fi
-
-    if [ -f "$LAB_CONSUL_PID_FILE" ]; then
-        local pid=$(cat "$LAB_CONSUL_PID_FILE")
-        if ps -p "$pid" > /dev/null; then
-            log_info "Found running Consul process with PID $pid. Attempting graceful shutdown..."
-            kill "$pid" >/dev/null 2>&1
-            sleep 5 # Give it some time to shut down
-            if ps -p "$pid" > /dev/null; then
-                log_warn "Consul process (PID: $pid) did not shut down gracefully. Forcing kill..."
-                kill -9 "$pid" >/dev/null 2>&1
-                sleep 1 # Give it a moment to release the port
-            fi
-            if ! ps -p "$pid" > /dev/null; then
-                log_info "Consul process (PID: $pid) stopped. ✅"
-                rm -f "$LAB_CONSUL_PID_FILE"
-            else
-                log_error "Consul process (PID: $pid) could not be stopped. Manual intervention may be required. 🛑"
-            fi
-        else
-            log_info "No active Consul process found with PID $pid (from $LAB_CONSUL_PID_FILE)."
-            rm -f "$LAB_CONSUL_PID_FILE" # Clean up stale PID file
-        fi
-    else
-        log_info "No Consul PID file found ($LAB_CONSUL_PID_FILE)."
-    fi
-
-    # Pulizia aggiuntiva della porta
-    local consul_port=$(echo "$CONSUL_ADDR" | cut -d':' -f3)
-    local lingering_pid=$(lsof -ti:"$consul_port" 2>/dev/null || true)
-    if [ -n "$lingering_pid" ]; then
-        log_warn "Processi residui sulla porta $consul_port: $lingering_pid. Terminazione..."
-        kill -9 "$lingering_pid" 2>/dev/null || true
-        sleep 1
-        if lsof -ti:"$consul_port" >/dev/null; then
-             log_error "Could not clear port $consul_port. Manual intervention required. 🛑"
-        else
-            log_info "Lingering processes on port $consul_port cleared. ✅"
-        fi
-    fi
 }
 
 # --- Function: Download or update Vault binary ---
@@ -408,9 +335,7 @@ download_latest_vault_binary() {
 
     local success=1
 
-    log_info "=================================================="
     log_info "VAULT BINARY MANAGEMENT: CHECK AND DOWNLOAD"
-    log_info "=================================================="
 
     local vault_releases_json
     vault_releases_json=$(curl -s "https://releases.hashicorp.com/vault/index.json")
@@ -514,9 +439,7 @@ download_latest_consul_binary() {
 
     local success=1
 
-    log_info "=================================================="
     log_info "CONSUL BINARY MANAGEMENT: CHECK AND DOWNLOAD"
-    log_info "=================================================="
 
     local consul_releases_json
     consul_releases_json=$(curl -s "https://releases.hashicorp.com/consul/index.json")
@@ -658,9 +581,7 @@ wait_for_consul_up() {
 
 # --- Function: Stop the entire lab environment (Vault + Consul if applicable) ---
 stop_lab_environment() {
-    log_info "\n=================================================="
     log_info "STOPPING VAULT LAB ENVIRONMENT (Backend: $BACKEND_TYPE)"
-    log_info "=================================================="
     stop_vault
     if [ "$BACKEND_TYPE" == "consul" ]; then
         stop_consul
@@ -670,9 +591,7 @@ stop_lab_environment() {
 
 # --- Function: Clean up previous environment ---
 cleanup_previous_environment() {
-    log_info "=================================================="
     log_info "FULL CLEANUP OF PREVIOUS LAB ENVIRONMENT (Backend: $BACKEND_TYPE)"
-    log_info "=================================================="
 
     stop_lab_environment # Use the unified stop function
 
@@ -707,9 +626,7 @@ cleanup_previous_environment() {
 
 # --- Function: Configure and start Consul ---
 configure_and_start_consul() {
-    log_info "\n=================================================="
     log_info "CONFIGURING AND STARTING CONSUL (SINGLE NODE SERVER)"
-    log_info "=================================================="
 
     local consul_port=$(echo "$CONSUL_ADDR" | cut -d':' -f3)
 
@@ -802,9 +719,7 @@ EOF
 
 # --- Function: Configure and start Vault ---
 configure_and_start_vault() {
-    log_info "\n=================================================="
     log_info "CONFIGURING LAB VAULT (SINGLE INSTANCE)"
-    log_info "=================================================="
 
     local vault_port=$(echo "$VAULT_ADDR" | cut -d':' -f3)
 
@@ -921,9 +836,7 @@ wait_for_unseal_ready() {
 
 # --- Function: Initialize and unseal Vault ---
 initialize_and_unseal_vault() {
-    log_info "\n=================================================="
     log_info "INITIALIZING AND UNSEALING VAULT"
-    log_info "=================================================="
 
     export VAULT_ADDR="$VAULT_ADDR" # Ensure VAULT_ADDR is set for vault commands
     local vault_exe="$BIN_DIR/vault"
@@ -1183,9 +1096,7 @@ populate_test_secrets() {
 
 # --- Function: Enable and configure common features ---
 configure_vault_features() {
-    log_info "\n=================================================="
     log_info "CONFIGURING COMMON VAULT FEATURES"
-    log_info "=================================================="
 
     enable_secrets_engines
     configure_policies
@@ -1245,9 +1156,7 @@ handle_existing_lab() {
                     # Re-apply configurations idempotently
                     configure_vault_features
 
-                    log_info "\n=================================================="
                     log_info "VAULT LAB RE-USE COMPLETED."
-                    log_info "=================================================="
                     display_final_info
                     exit 0 # Exit after successful re-use
                     ;;
@@ -1260,9 +1169,7 @@ handle_existing_lab() {
 
 # --- Function: Check Lab Status ---
 check_lab_status() {
-    log_info "\n=================================================="
     log_info "CHECKING VAULT LAB STATUS (Backend: $BACKEND_TYPE)"
-    log_info "=================================================="
 
     local vault_pid=""
     local vault_is_running=false
@@ -1338,15 +1245,11 @@ check_lab_status() {
             log_info "Consul server is not running. 🛑"
         fi
     fi
-
-    log_info "=================================================="
 }
 
 # --- Function: Display final information ---
 display_final_info() {
-    log_info "\n=================================================="
     log_info "LAB VAULT IS READY TO USE!"
-    log_info "=================================================="
 
     local wsl_ip=$(ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
     local vault_root_token=$(cat "$VAULT_DIR/root_token.txt" 2>/dev/null)
@@ -1430,7 +1333,6 @@ start_lab_environment_core() {
 
     mkdir -p "$BIN_DIR" || log_error "Failed to create directory $BIN_DIR. Check permissions."
     download_latest_vault_binary "$BIN_DIR"
-    log_info "=================================================="
 
     if [ "$BACKEND_TYPE" == "consul" ]; then
         download_latest_consul_binary "$BIN_DIR"
@@ -1446,9 +1348,7 @@ start_lab_environment_core() {
 
 # --- Funzione restart aggiornata ---
 restart_lab_environment() {
-    log_info "\n=================================================="
     log_info "RESTARTING VAULT LAB ENVIRONMENT (Backend: $BACKEND_TYPE)"
-    log_info "=================================================="
 
     stop_lab_environment
     log_info "Waiting briefly before restarting services..."
@@ -1472,11 +1372,85 @@ restart_lab_environment() {
     log_info "Vault lab environment restarted and unsealed. 🔄"
 }
 
+# --- Generic service stopper (Step 6 refactor) ---
+stop_service() {
+    local name="$1"            # e.g., Vault or Consul
+    local pid_file="$2"        # e.g., $LAB_VAULT_PID_FILE
+    local process_pattern="$3" # e.g., "vault server" or "consul agent"
+    local port="$4"            # e.g., 8200 or 8500
+
+    log_info "Attempting to stop ${name} server..."
+
+    # Kill by process pattern (best-effort)
+    local pids
+    pids=$(pgrep -f "$process_pattern" || true)
+    if [ -n "$pids" ]; then
+        log_info "Trovati processi ${name} esistenti: $pids. Terminazione..."
+        kill -TERM $pids 2>/dev/null || true
+        sleep 2
+        kill -9 $pids 2>/dev/null || true
+    fi
+
+    # Kill by PID file (graceful first)
+    if [ -f "$pid_file" ]; then
+        local pid
+        pid=$(cat "$pid_file")
+        if ps -p "$pid" >/dev/null; then
+            log_info "Found running ${name} process with PID $pid. Attempting graceful shutdown..."
+            kill "$pid" >/dev/null 2>&1
+            sleep 5
+            if ps -p "$pid" >/dev/null; then
+                log_warn "${name} process (PID: $pid) did not shut down gracefully. Forcing kill..."
+                kill -9 "$pid" >/dev/null 2>&1
+                sleep 1
+            fi
+            if ! ps -p "$pid" >/dev/null; then
+                log_info "${name} process (PID: $pid) stopped. ✅"
+                rm -f "$pid_file"
+            else
+                log_error "${name} process (PID: $pid) could not be stopped. Manual intervention may be required. 🛑"
+            fi
+        else
+            log_info "No active ${name} process found with PID $pid (from $pid_file)."
+            rm -f "$pid_file"
+        fi
+    else
+        log_info "No ${name} PID file found ($pid_file)."
+    fi
+
+    # Ensure port is freed (best-effort)
+    if [ -n "$port" ]; then
+        local lingering_pid
+        lingering_pid=$(lsof -ti:"$port" 2>/dev/null || true)
+        if [ -n "$lingering_pid" ]; then
+            log_warn "Processi residui sulla porta $port: $lingering_pid. Terminazione..."
+            kill -9 "$lingering_pid" 2>/dev/null || true
+            sleep 1
+            if lsof -ti:"$port" >/dev/null; then
+                log_error "Could not clear port $port. Manual intervention required. 🛑"
+            else
+                log_info "Lingering processes on port $port cleared. ✅"
+            fi
+        fi
+    fi
+}
+
+stop_vault() {
+    local vault_port
+    vault_port=$(echo "$VAULT_ADDR" | cut -d':' -f3)
+    stop_service "Vault" "$LAB_VAULT_PID_FILE" "vault server" "$vault_port"
+}
+
+stop_consul() {
+  local consul_port
+  consul_port=$(echo "$CONSUL_ADDR" | cut -d':' -f3)
+  stop_service "Consul" "$LAB_CONSUL_PID_FILE" "consul agent" "$consul_port"
+}
+
+
 # --- Function: Reset lab environment ---
 reset_lab_environment() {
-    log_info "\n=================================================="
     log_info "RESETTING VAULT LAB ENVIRONMENT (Backend: $BACKEND_TYPE)"
-    log_info "=================================================="
     cleanup_previous_environment
     start_lab_environment_core
 }
@@ -1484,12 +1458,14 @@ reset_lab_environment() {
 # --- Main ---
 main() {
     if [ ! -t 1 ]; then COLORS_ENABLED=false; fi
+    apply_color_settings
+
 
     local command="start"
     local temp_base_dir=""
     local original_args=("$@")
 
-    # Setup cleanup trap
+
     setup_cleanup_trap
 
     local i=1
