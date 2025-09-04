@@ -263,18 +263,7 @@ zero-to-hashicorp-labs/
 │   ├── consul.pid              # File containing the PID of the running Consul server 🆔
 │   ├── data/                   # Consul data directory 📦
 │   └── acl_master_token.txt    # Consul ACL Master Token 🔑
-├── bao-lab/                    # Working directory for OpenBao data, config, and keys
-│   ├── config.hcl              # OpenBao server configuration file ⚙️
-│   ├── bao.log                 # OpenBao server logs 📄
-│   ├── bao.pid                 # File containing the PID of the running OpenBao server 🆔
-│   ├── storage/                # OpenBao storage directory (your data!) 📦
-│   ├── root_token.txt          # The generated root token (or "root") for easy access 🗝️
-│   ├── unseal_key.txt          # The unseal key for your OpenBao 🔓
-│   ├── approle-policy.hcl      # HCL policy for AppRole 📜
-│   ├── approle_role_id.txt     # Role ID for the 'web-application' AppRole 🆔
-│   └── approle_secret_id.txt   # Secret ID for the 'web-application' AppRole 🤫
 ├── vault-lab-ctl.sh            # Vault Lab unified control script ▶️
-├── bao-lab-ctl.sh              # OpenBao Lab unified control script ▶️
 └── README.md                   # This file you are reading! 📖
 
 ```

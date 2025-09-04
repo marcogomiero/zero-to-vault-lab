@@ -26,32 +26,12 @@
 #   For more options: `./vault-lab-ctl.sh --help`
 
 # --- Global Configuration ---
-BASE_DIR="/mnt/c/Users/gomiero1/PycharmProjects/PythonProject/zero-to-vault-lab-v2"
-BIN_DIR="$BASE_DIR/bin"
-VAULT_DIR="$BASE_DIR/vault-lab"
-CONSUL_DIR="$BASE_DIR/consul-lab"
-VAULT_ADDR="http://127.0.0.1:8200"
-CONSUL_ADDR="http://127.0.0.1:8500"
-LAB_VAULT_PID_FILE="$VAULT_DIR/vault.pid"
-LAB_CONSUL_PID_FILE="$CONSUL_DIR/consul.pid"
-LAB_CONFIG_FILE="$VAULT_DIR/vault-lab-ctl.conf"
-
-
-AUDIT_LOG_PATH="/dev/null"
-
-
-FORCE_CLEANUP_ON_START=false
-VERBOSE_OUTPUT=false
-COLORS_ENABLED=true
-BACKEND_TYPE_SET_VIA_ARG=false
-BACKEND_TYPE="file"
-
+source .env
 
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 RED='\033[0;31m'
 NC='\033[0m'
-
 
 # --- Helpers OS/Binary & Logging ---
 apply_color_settings() {
@@ -108,6 +88,7 @@ display_help() {
     echo "This script deploys a HashiCorp Vault lab environment."
     echo ""
     echo "Options:"
+echo "      --offline                  Skip binary downloads (Vault/Consul) and use local files only."
     echo "  -c, --clean                    Force clean setup (wipe existing data before start)."
     echo "  -h, --help                     Show this help and exit."
     echo "  -v, --verbose                  Verbose output (enables [DEBUG] logs)."
@@ -1141,9 +1122,17 @@ handle_existing_lab() {
 
                     # Ensure bin directory exists and binaries are downloaded/updated
                     mkdir -p "$BIN_DIR" || log_error "Failed to create $BIN_DIR."
-                    download_latest_vault_binary "$BIN_DIR"
+                    if [ \"$OFFLINE_MODE\" = false ]; then
+    download_latest_vault_binary "$BIN_DIR"
+else
+    log_info \"Offline mode attivo: salto download Vault.\"
+fi
                     if [ "$BACKEND_TYPE" == "consul" ]; then
-                        download_latest_consul_binary "$BIN_DIR"
+                        if [ \"$OFFLINE_MODE\" = false ]; then
+    download_latest_consul_binary "$BIN_DIR"
+else
+    log_info \"Offline mode attivo: salto download Consul.\"
+fi
                         configure_and_start_consul # Start Consul first for Vault to connect
                     fi
 
@@ -1332,10 +1321,18 @@ start_lab_environment_core() {
     validate_ports_available
 
     mkdir -p "$BIN_DIR" || log_error "Failed to create directory $BIN_DIR. Check permissions."
+    if [ \"$OFFLINE_MODE\" = false ]; then
     download_latest_vault_binary "$BIN_DIR"
+else
+    log_info \"Offline mode attivo: salto download Vault.\"
+fi
 
     if [ "$BACKEND_TYPE" == "consul" ]; then
-        download_latest_consul_binary "$BIN_DIR"
+        if [ \"$OFFLINE_MODE\" = false ]; then
+    download_latest_consul_binary "$BIN_DIR"
+else
+    log_info \"Offline mode attivo: salto download Consul.\"
+fi
         configure_and_start_consul
     fi
 
@@ -1472,6 +1469,10 @@ main() {
     while [[ $i -le ${#original_args[@]} ]]; do
         local arg="${original_args[$((i-1))]}"
         case "$arg" in
+        --offline)
+            OFFLINE_MODE=true
+            ;;
+
             -h|--help)
                 display_help
                 ;;
