@@ -73,8 +73,6 @@ Use the `vault-lab-ctl.sh` script to manage the entire lifecycle of your test en
 | **`--verbose`** |  | Enables debug logs for more detailed troubleshooting. |
 | **`--no-color`** |  | Disables colored output, useful for logging or integration with other scripts. |
 
-Esporta in Fogli
-
 * * * * *
 
 ✅ What to Expect (Example Output)
