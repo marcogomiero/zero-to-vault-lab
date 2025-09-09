@@ -1,6 +1,6 @@
 #!/bin/bash
 # A script to deploy a local HashiCorp Vault lab environment.
-# Main entrypoint - loads functions from the lib/ directory.
+# Main entrypoint - loads functions from the lib/ directory..
 
 # --- Setup Script Directory ---
 # Ensures that sourcing works correctly regardless of where the script is called from
