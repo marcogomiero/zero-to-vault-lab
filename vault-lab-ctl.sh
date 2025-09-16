@@ -1,12 +1,11 @@
 #!/bin/bash
 # A script to deploy a local HashiCorp Vault lab environment.
-# Main entrypoint - loads functions from the lib/ directory..
+# Main entrypoint - loads functions from the lib/ directory.
 
 # --- Setup Script Directory ---
 # Ensures that sourcing works correctly regardless of where the script is called from
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
-# --- Global Configuration ---
 # --- Global Configuration ---
 BASE_DIR="/mnt/c/Users/gomiero1/PycharmProjects/PythonProject/zero-to-vault-lab-v2"
 BIN_DIR="$BASE_DIR/bin"
@@ -31,6 +30,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/dependencies.sh"
 source "$SCRIPT_DIR/lib/consul.sh"
 source "$SCRIPT_DIR/lib/vault.sh"
+source "$SCRIPT_DIR/lib/backup.sh"
 source "$SCRIPT_DIR/lib/lifecycle.sh"
 
 # --- Execute Main Function ---

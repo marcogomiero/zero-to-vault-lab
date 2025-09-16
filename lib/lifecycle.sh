@@ -15,6 +15,20 @@ display_help() {
     echo ""
     echo "Commands:"
     echo "  start, stop, restart, reset, status, cleanup, shell"
+    echo ""
+    echo "Backup/Restore Commands:"
+    echo "  backup [name] [description]    Create a backup of current lab state"
+    echo "  restore <name> [--force]       Restore from a backup"
+    echo "  list-backups                   List all available backups"
+    echo "  delete-backup <name> [--force] Delete a specific backup"
+    echo "  export-backup <name> [path]    Export backup to tar.gz file"
+    echo "  import-backup <path> [name]    Import backup from tar.gz file"
+    echo ""
+    echo "Examples:"
+    echo "  $0 backup my-config \"Working KV setup\""
+    echo "  $0 restore my-config"
+    echo "  $0 list-backups"
+    echo "  $0 export-backup my-config ./my-backup.tar.gz"
     exit 0
 }
 
@@ -77,8 +91,6 @@ check_lab_status() {
     fi
 }
 
-# Sostituisci l'intera funzione in lib/lifecycle.sh
-
 display_final_info() {
     log_info "LAB VAULT IS READY TO USE!"
     # --- Raccogli tutte le informazioni ---
@@ -86,7 +98,7 @@ display_final_info() {
     local host_ip=$(get_host_accessible_ip)
     local approle_role_id=$(cat "$VAULT_DIR/approle_role_id.txt" 2>/dev/null)
     local approle_secret_id=$(cat "$VAULT_DIR/approle_secret_id.txt" 2>/dev/null)
-    local consul_token=$(cat "$CONSUL_DIR/acl_master_token.txt" 2>/dev/null) # <-- NUOVO
+    local consul_token=$(cat "$CONSUL_DIR/acl_master_token.txt" 2>/dev/null)
 
     # --- Stampa il riepilogo ---
     echo -e "\n${YELLOW}--- ACCESS DETAILS ---${NC}"
@@ -96,7 +108,7 @@ display_final_info() {
     if [ "$BACKEND_TYPE" == "consul" ]; then
         echo -e "  ---"
         echo -e "  🔗 Consul UI: ${GREEN}http://${host_ip}:8500${NC} (Accessibile dal browser di Windows)"
-        echo -e "  🔑 Consul ACL Token: ${GREEN}$consul_token${NC} (Usalo per il login nella UI)" # <-- NUOVO
+        echo -e "  🔑 Consul ACL Token: ${GREEN}$consul_token${NC} (Usalo per il login nella UI)"
     fi
 
     echo -e "\n${YELLOW}--- EXAMPLE USAGE ---${NC}"
@@ -117,7 +129,7 @@ display_final_info() {
     if [ "$BACKEND_TYPE" == "consul" ]; then
         echo ""
         echo -e "    # To use the consul CLI, export the token:"
-        echo -e "    ${GREEN}export CONSUL_HTTP_TOKEN=\"$consul_token\"${NC}" # <-- NUOVO
+        echo -e "    ${GREEN}export CONSUL_HTTP_TOKEN=\"$consul_token\"${NC}"
         echo -e "    ${GREEN}consul members${NC}"
     fi
 
@@ -144,8 +156,6 @@ start_lab_environment_core() {
     save_backend_type_to_config
     display_final_info
 }
-
-# Sostituisci l'intera funzione in lib/lifecycle.sh
 
 restart_lab_environment() {
     log_info "RESTARTING VAULT LAB ENVIRONMENT (Backend: $BACKEND_TYPE)"
@@ -181,6 +191,13 @@ main() {
     local command="start"
     local original_args=("$@") # Salva gli argomenti originali
 
+    # Variabili per i parametri dei comandi backup/restore
+    local backup_name=""
+    local backup_desc=""
+    local backup_force=""
+    local export_path=""
+    local import_path=""
+
     # Parsing degli argomenti
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -190,6 +207,47 @@ main() {
             --no-color) COLORS_ENABLED=false; shift ;;
             --backend) BACKEND_TYPE="$2"; BACKEND_TYPE_SET_VIA_ARG=true; shift 2 ;;
             start|stop|restart|reset|status|cleanup|shell) command="$1"; shift ;;
+            # Nuovi comandi backup/restore
+            backup)
+                command="backup"
+                backup_name="$2"
+                backup_desc="$3"
+                shift
+                [ -n "$2" ] && shift
+                [ -n "$2" ] && shift
+                ;;
+            restore)
+                command="restore"
+                backup_name="$2"
+                backup_force="$3"
+                shift 2
+                [ -n "$2" ] && shift
+                ;;
+            list-backups)
+                command="list-backups"
+                shift
+                ;;
+            delete-backup)
+                command="delete-backup"
+                backup_name="$2"
+                backup_force="$3"
+                shift 2
+                [ -n "$2" ] && shift
+                ;;
+            export-backup)
+                command="export-backup"
+                backup_name="$2"
+                export_path="$3"
+                shift 2
+                [ -n "$2" ] && shift
+                ;;
+            import-backup)
+                command="import-backup"
+                import_path="$2"
+                backup_name="$3"
+                shift 2
+                [ -n "$2" ] && shift
+                ;;
             *) log_error "Invalid argument: $1";;
         esac
     done
@@ -205,8 +263,13 @@ main() {
     fi
 
     # Carica il tipo di backend dal file di config per i comandi che non sono 'start' o 'reset'
-    if [[ "$command" != "start" && "$command" != "reset" ]]; then
+    if [[ "$command" != "start" && "$command" != "reset" && "$command" != "backup" && "$command" != "list-backups" && "$command" != "delete-backup" && "$command" != "export-backup" && "$command" != "import-backup" ]]; then
         load_backend_type_from_config
+    fi
+
+    # Per i comandi backup che potrebbero aver bisogno del backend type
+    if [[ "$command" == "backup" || "$command" == "restore" ]]; then
+        load_backend_type_from_config 2>/dev/null || true
     fi
 
     # *** BLOCCO RIPRISTINATO: Chiedi il backend se necessario ***
@@ -234,6 +297,12 @@ main() {
         reset) reset_lab_environment ;;
         status) check_lab_status ;;
         cleanup) cleanup_previous_environment ;;
+        backup) create_backup "$backup_name" "$backup_desc" ;;
+        restore) restore_backup "$backup_name" "$backup_force" ;;
+        list-backups) list_backups ;;
+        delete-backup) delete_backup "$backup_name" "$backup_force" ;;
+        export-backup) export_backup "$backup_name" "$export_path" ;;
+        import-backup) import_backup "$import_path" "$backup_name" ;;
         *) log_error "Invalid command '$command'." ;;
     esac
 }
