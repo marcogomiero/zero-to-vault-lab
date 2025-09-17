@@ -14,15 +14,15 @@ Run **one command** and watch the script pull the latest binaries, wire up TLS, 
 
 -   **Break it & rebuild it** -- policies, auth methods, secret engines... experiment freely, then reset with one command.
 
--   **Batteries included** -- KV v2, PKI, Userpass and AppRole authentication pre-enabled so you can focus on learning, not bootstrapping.
+-   **Batteries included** -- KV v2, PKI, Transit and Database engines pre-enabled so you can focus on learning, not bootstrapping.
 
 ### ⚡ Quick Start
 
 `git clone https://github.com/your-repo/zero-to-vault-lab.git
 cd zero-to-vault-lab
-./vault-lab-ctl.sh start` 
+./vault-lab-ctl.sh start`
 
-That's it. The script fetches everything, configures Vault and Consul, and gives you credentials on the console.
+That's it. The script fetches everything, configures Vault and Consul, and prints all credentials you need.
 
 ### 🧩 Key Features
 
@@ -32,7 +32,7 @@ That's it. The script fetches everything, configures Vault and Consul, and gives
 | **One-line lifecycle** | `start`, `stop`, `restart`, `reset`, `cleanup`, `status`, and an interactive `shell` with VAULT_TOKEN pre-set. |
 | **Backup & Restore** | Full-state hot and cold backups with SHA256 verification, export/import for easy sharing. |
 | **Pre-configured Auth** | Userpass test user (`devuser/devpass`) and AppRole with ready Role ID/Secret ID. |
-| **Secrets Engines Ready** | KV v2 and PKI enabled automatically. |
+| **Secrets Engines Ready** | KV v2, PKI, **Transit** (encryption as a service), and **Database (SQLite demo)** enabled automatically. |
 
 ### 🚀 Try the Cluster Mode
 
@@ -47,6 +47,16 @@ This starts:
 -   Automatic initialization and unseal across all nodes.
 
 Access Vault at **<https://localhost:8200>** and Consul at **<http://localhost:8500>**.
+
+### 🔐 Demo Engines Out of the Box
+
+-   **KV v2** -- Standard key/value secrets.
+
+-   **PKI** -- Issue and manage certificates.
+
+-   **Transit** -- Encryption-as-a-service with a pre-created key `lab-key` (try `vault write transit/encrypt/lab-key plaintext=$(base64 <<< "hello")`).
+
+-   **Database (SQLite)** -- Dynamic credentials using the `sqlite-database-plugin`; generate demo creds with `vault read database/creds/demo-role`.
 
 ### 🏗️ Learn More
 

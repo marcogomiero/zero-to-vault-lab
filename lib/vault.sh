@@ -150,42 +150,85 @@ initialize_and_unseal_vault() {
 configure_vault_features() {
     log_info "CONFIGURING COMMON VAULT FEATURES"
     local vault_exe=$(get_vault_exe)
+
+    # --- KV v2 ---
     log_info " - Enabling KV v2 secrets engine at 'secret/'"
     "$vault_exe" secrets enable -path=secret kv-v2 &>/dev/null
+
+    # --- PKI ---
     log_info " - Enabling PKI secrets engine at 'pki/'"
     "$vault_exe" secrets enable pki &>/dev/null
     "$vault_exe" secrets tune -max-lease-ttl=87600h pki &>/dev/null
+
+    # --- Policies and Auth ---
     log_info " - Creating 'dev-policy' for test users..."
     echo 'path "secret/*" {
-  capabilities = ["list"]
-}
-path "secret/data/*" {
-  capabilities = ["create","read","update","delete","list","patch","sudo"]
-}
-path "secret/metadata/*" {
-  capabilities = ["create","read","update","delete","list","patch","sudo"]
-}' | "$vault_exe" policy write dev-policy -
+      capabilities = ["list"]
+    }
+    path "secret/data/*" {
+      capabilities = ["create","read","update","delete","list","patch","sudo"]
+    }
+    path "secret/metadata/*" {
+      capabilities = ["create","read","update","delete","list","patch","sudo"]
+    }' | "$vault_exe" policy write dev-policy -
+
     log_info " - Enabling Userpass authentication..."
     "$vault_exe" auth enable userpass &>/dev/null
     "$vault_exe" write auth/userpass/users/devuser password=devpass policies="default,dev-policy" &>/dev/null
+
     log_info " - Enabling and configuring AppRole Auth Method..."
     "$vault_exe" auth enable approle &>/dev/null
     echo 'path "secret/*" {
-  capabilities = ["list"]
-}
-path "secret/data/my-app/*" {
-  capabilities = ["create","read","update","delete","list","patch","sudo"]
-}
-path "secret/metadata/my-app/*" {
-  capabilities = ["create","read","update","delete","list","patch","sudo"]
-}' | "$vault_exe" policy write my-app-policy -
+      capabilities = ["list"]
+    }
+    path "secret/data/my-app/*" {
+      capabilities = ["create","read","update","delete","list","patch","sudo"]
+    }
+    path "secret/metadata/my-app/*" {
+      capabilities = ["create","read","update","delete","list","patch","sudo"]
+    }' | "$vault_exe" policy write my-app-policy -
     "$vault_exe" write auth/approle/role/web-application token_policies="default,my-app-policy"
     local role_id=$("$vault_exe" read -field=role_id auth/approle/role/web-application/role-id)
     local secret_id=$("$vault_exe" write -f -field=secret_id auth/approle/role/web-application/secret-id)
     echo "$role_id" > "$VAULT_DIR/approle_role_id.txt"
     echo "$secret_id" > "$VAULT_DIR/approle_secret_id.txt"
+
     log_info " - Enabling file audit device to $AUDIT_LOG_PATH"
     "$vault_exe" audit enable file file_path="$AUDIT_LOG_PATH" &>/dev/null
+
     log_info " - Writing test secret to secret/test-secret"
     "$vault_exe" kv put secret/test-secret message="Hello from Vault!" username="testuser" &>/dev/null
+
+    # ------------------------------------------------------------------
+    # --- NEW DEMO ENGINES ---------------------------------------------
+    # ------------------------------------------------------------------
+
+    # --- Transit engine demo ---
+    log_info " - Enabling Transit secrets engine for encryption-as-a-service"
+    "$vault_exe" secrets enable transit &>/dev/null
+    "$vault_exe" write -f transit/keys/lab-key &>/dev/null
+    log_info "   Transit key 'lab-key' ready. Example: vault write transit/encrypt/lab-key plaintext=$(base64 <<< 'hello')"
+
+    # --- Database engine demo with SQLite plugin ---
+    # This requires the sqlite-database-plugin to be available in Vault.
+    log_info " - Enabling Database secrets engine (SQLite demo)"
+    "$vault_exe" secrets enable database &>/dev/null
+
+    # Configure a SQLite demo database stored in the Vault data directory
+    local sqlite_db_path="$VAULT_DIR/demo.db"
+    touch "$sqlite_db_path"
+
+    "$vault_exe" write database/config/demo \
+        plugin_name=sqlite-database-plugin \
+        connection_url="file:${sqlite_db_path}?mode=rwc" &>/dev/null
+
+    "$vault_exe" write database/roles/demo-role \
+        db_name=demo \
+        creation_statements="CREATE TABLE IF NOT EXISTS users(name TEXT); \
+                             -- Vault will generate user creds automatically" \
+        default_ttl="1h" \
+        max_ttl="24h" &>/dev/null
+
+    log_info "   Database engine configured with SQLite demo DB at $sqlite_db_path"
+    log_info "   Try: vault read database/creds/demo-role  (dynamic creds with 1h TTL)"
 }
