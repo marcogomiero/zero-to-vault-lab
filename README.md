@@ -28,4 +28,4 @@ Open **<https://localhost:8200>** to start exploring.
 Learn More
 ----------
 
-Full documentation, architecture diagrams, and advanced scenarios are in the **[project wiki](https://github.com/marcogomiero/zero-to-vault-lab/wiki**.
+Full documentation, architecture diagrams, and advanced scenarios are in the **[project wiki](https://github.com/marcogomiero/zero-to-vault-lab/wiki)**.
