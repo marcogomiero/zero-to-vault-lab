@@ -20,7 +20,7 @@ Run **one command** and watch the script pull the latest binaries, wire up TLS, 
 
 `git clone https://github.com/your-repo/zero-to-vault-lab.git
 cd zero-to-vault-lab
-./vault-lab-ctl.sh start`
+./vault-lab-ctl.sh start` 
 
 That's it. The script fetches everything, configures Vault and Consul, and gives you credentials on the console.
 
