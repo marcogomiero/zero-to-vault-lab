@@ -18,6 +18,9 @@ LAB_CONSUL_PID_FILE="$CONSUL_DIR/consul.pid"
 LAB_CONFIG_FILE="$BASE_DIR/vault-lab-ctl.conf"
 AUDIT_LOG_PATH="/dev/null"
 
+# --- CLUSTER ---
+CLUSTER_MODE=""   # single | multi, scelto da --cluster o da prompt
+
 # --- Script Behavior Flags ---
 FORCE_CLEANUP_ON_START=false
 VERBOSE_OUTPUT=false

@@ -30,6 +30,15 @@ wait_for_unseal_ready() {
 }
 
 stop_vault() {
+    # --- CLUSTER ---
+    if [ -f "$VAULT_DIR/vault_pids" ]; then
+        while read -r pid; do
+            kill "$pid" 2>/dev/null || true
+        done < "$VAULT_DIR/vault_pids"
+        rm -f "$VAULT_DIR/vault_pids"
+        log_info "All Vault nodes stopped. ✅"
+        return
+    fi
     local vault_port=$(echo "$VAULT_ADDR" | cut -d':' -f3)
     stop_service "Vault" "$LAB_VAULT_PID_FILE" "vault server" "$vault_port"
 }
@@ -71,6 +80,32 @@ EOF
     wait_for_vault_up "$VAULT_ADDR"
 }
 
+# --- CLUSTER ---
+start_vault_nodes() {
+    log_info "CONFIGURING AND STARTING 3-NODE VAULT CLUSTER (Consul backend)"
+    stop_vault
+    local consul_token=$(cat "$CONSUL_DIR/acl_master_token.txt")
+    rm -f "$VAULT_DIR/vault_pids"
+    for i in 1 2 3; do
+        local port=$((8200 + i - 1))
+        local cluster_port=$((8300 + i - 1))
+        local node_dir="$VAULT_DIR/node_$i"
+        mkdir -p "$node_dir"
+        cat > "$node_dir/config.hcl" <<EOF
+storage "consul" { address = "$CONSUL_ADDR" path = "vault/" token = "$consul_token" }
+listener "tcp" { address = "127.0.0.1:$port" tls_disable = 1 }
+api_addr = "http://127.0.0.1:$port"
+cluster_addr = "http://127.0.0.1:$cluster_port"
+ui = true
+EOF
+        local vault_exe=$(get_vault_exe)
+        "$vault_exe" server -config="$node_dir/config.hcl" > "$node_dir/vault.log" 2>&1 &
+        echo $! >> "$VAULT_DIR/vault_pids"
+        log_info "Vault node $i started on port $port"
+        wait_for_vault_up "http://127.0.0.1:$port"
+    done
+}
+
 initialize_and_unseal_vault() {
     log_info "INITIALIZING AND UNSEALING VAULT"
     export VAULT_ADDR="$VAULT_ADDR"
@@ -94,8 +129,16 @@ initialize_and_unseal_vault() {
     if [ "$(echo "$status_json" | jq -r '.sealed')" == "true" ]; then
         log_info "Vault is sealed. Unsealing..."
         local unseal_key=$(cat "$VAULT_DIR/unseal_key.txt")
-        "$vault_exe" operator unseal "$unseal_key" >/dev/null
-        log_info "Vault unsealed successfully. ✅"
+        # --- CLUSTER ---
+        if [ "$CLUSTER_MODE" = "multi" ]; then
+            for port in 8200 8201 8202; do
+                VAULT_ADDR="http://127.0.0.1:$port" "$vault_exe" operator unseal "$unseal_key" >/dev/null
+                log_info "Node on port $port unsealed."
+            done
+        else
+            "$vault_exe" operator unseal "$unseal_key" >/dev/null
+            log_info "Vault unsealed successfully. ✅"
+        fi
     else
         log_info "Vault is already unsealed."
     fi
@@ -107,21 +150,16 @@ initialize_and_unseal_vault() {
 configure_vault_features() {
     log_info "CONFIGURING COMMON VAULT FEATURES"
     local vault_exe=$(get_vault_exe)
-
     log_info " - Enabling KV v2 secrets engine at 'secret/'"
     "$vault_exe" secrets enable -path=secret kv-v2 &>/dev/null
-
     log_info " - Enabling PKI secrets engine at 'pki/'"
     "$vault_exe" secrets enable pki &>/dev/null
     "$vault_exe" secrets tune -max-lease-ttl=87600h pki &>/dev/null
-
     log_info " - Creating 'dev-policy' for test users..."
     echo 'path "secret/data/*" { capabilities = ["read", "list"] }' | "$vault_exe" policy write dev-policy -
-
     log_info " - Enabling Userpass authentication..."
     "$vault_exe" auth enable userpass &>/dev/null
     "$vault_exe" write auth/userpass/users/devuser password=devpass policies="default,dev-policy" &>/dev/null
-
     log_info " - Enabling and configuring AppRole Auth Method..."
     "$vault_exe" auth enable approle &>/dev/null
     echo 'path "secret/data/my-app/*" { capabilities = ["read"] }' | "$vault_exe" policy write my-app-policy -
@@ -130,10 +168,8 @@ configure_vault_features() {
     local secret_id=$("$vault_exe" write -f -field=secret_id auth/approle/role/web-application/secret-id)
     echo "$role_id" > "$VAULT_DIR/approle_role_id.txt"
     echo "$secret_id" > "$VAULT_DIR/approle_secret_id.txt"
-
     log_info " - Enabling file audit device to $AUDIT_LOG_PATH"
     "$vault_exe" audit enable file file_path="$AUDIT_LOG_PATH" &>/dev/null
-
     log_info " - Writing test secret to secret/test-secret"
     "$vault_exe" kv put secret/test-secret message="Hello from Vault!" username="testuser" &>/dev/null
 }
