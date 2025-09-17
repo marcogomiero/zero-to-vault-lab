@@ -121,10 +121,21 @@ check_lab_status() {
 display_final_info() {
     log_info "LAB VAULT IS READY TO USE!"
     local vault_root_token=$(cat "$VAULT_DIR/root_token.txt" 2>/dev/null)
-    local host_ip=$(get_host_accessible_ip)
     local approle_role_id=$(cat "$VAULT_DIR/approle_role_id.txt" 2>/dev/null)
     local approle_secret_id=$(cat "$VAULT_DIR/approle_secret_id.txt" 2>/dev/null)
     local consul_token=$(cat "$CONSUL_DIR/acl_master_token.txt" 2>/dev/null)
+
+    # Determina gli IP corretti in base all'ambiente
+    local vault_ip="127.0.0.1"  # Vault sempre su localhost
+    local consul_ip="127.0.0.1" # Default per Consul
+
+    # Su WSL, usa l'IP della VM per Consul per accessibilità esterna
+    if grep -q "microsoft" /proc/version &>/dev/null; then
+        local wsl_ip=$(ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+        if [ -n "$wsl_ip" ]; then
+            consul_ip="$wsl_ip"
+        fi
+    fi
 
     local protocol="http"
     local tls_note=""
@@ -134,20 +145,20 @@ display_final_info() {
     fi
 
     echo -e "\n${YELLOW}--- ACCESS DETAILS ---${NC}"
-    echo -e "  🔗 Vault UI: ${GREEN}${protocol}://${host_ip}:8200${NC}${tls_note}"
+    echo -e "  🔗 Vault UI: ${GREEN}${protocol}://${vault_ip}:8200${NC}${tls_note}"
     echo -e "  🔑 Vault Root Token: ${GREEN}$vault_root_token${NC}"
 
     if [ "$BACKEND_TYPE" == "consul" ]; then
         echo -e "  ---"
-        echo -e "  🔗 Consul UI: ${GREEN}${protocol}://${host_ip}:8500${NC}${tls_note}"
+        echo -e "  🔗 Consul UI: ${GREEN}${protocol}://${consul_ip}:8500${NC}${tls_note}"
         echo -e "  🔑 Consul ACL Token: ${GREEN}$consul_token${NC}"
     fi
 
     if [ "$CLUSTER_MODE" = "multi" ]; then
         echo -e "\n${YELLOW}Vault cluster nodes:${NC}"
-        echo "  ${protocol}://127.0.0.1:8200"
-        echo "  ${protocol}://127.0.0.1:8201"
-        echo "  ${protocol}://127.0.0.1:8202"
+        echo "  ${protocol}://${vault_ip}:8200"
+        echo "  ${protocol}://${vault_ip}:8201"
+        echo "  ${protocol}://${vault_ip}:8202"
     fi
 
     if [ "$ENABLE_TLS" = true ]; then
@@ -158,6 +169,11 @@ display_final_info() {
         echo -e "  ${CYAN}Linux:${NC} sudo cp $CA_CERT /usr/local/share/ca-certificates/vault-lab-ca.crt && sudo update-ca-certificates"
         echo -e "  ${CYAN}macOS:${NC} sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain $CA_CERT"
         echo -e "  ${CYAN}Windows:${NC} Import CA cert via certmgr.msc into Trusted Root Certification Authorities"
+
+        if grep -q "microsoft" /proc/version &>/dev/null; then
+            echo -e "\n  ${YELLOW}WSL Note:${NC} Vault uses localhost (127.0.0.1) for local access"
+            echo -e "  Consul uses VM IP ($consul_ip) for Windows host access"
+        fi
     fi
 }
 
