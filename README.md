@@ -28,10 +28,10 @@ You'll get a single Consul instance and three Vault API endpoints (`8200`, `8201
 Run these three commands:
 
 `# 1. Clone the repository
-git clone https://github.com/marcogomiero/zero-to-hashicorp-labs.git
+git clone https://github.com/marcogomiero/zero-to-vault-lab.git
 
 # 2. Change into the directory
-cd zero-to-hashicorp-labs
+cd zero-to-vault-lab
 
 # 3. Start the lab
 ./vault-lab-ctl.sh start`
