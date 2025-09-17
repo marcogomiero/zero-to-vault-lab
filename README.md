@@ -1,269 +1,177 @@
 HashiCorp Vault Lab 🚀
-======================
+----------------------
 
-This repository provides a laboratory environment for **HashiCorp Vault**, deployable with a single, simple Bash script. It's designed for anyone looking to explore, test, or develop with Vault without the complexity of a manual setup.
+A full laboratory environment for HashiCorp Vault, deployable with a single Bash script.\
+Perfect for exploring, testing, or developing with Vault without the headache of a manual setup.
 
-The goal is simple: one command to get a running, configured, and ready-to-use Vault instance for your experiments.
+The goal is simple: **one command** to get a running, configured, and ready-to-use Vault environment for your experiments.
+
+* * * * *
+
+### ✨ **New: Multi-Node Vault Cluster**
+
+You can now start the lab in **single-node** or **multi-node** mode.
+
+-   **Single Mode** -- one Vault server with either a File or Consul backend.
+
+-   **Cluster Mode** -- a **3-node Vault cluster** automatically configured with a shared **Consul backend** for real high-availability testing.
+
+When you run `./vault-lab-ctl.sh start` the script **first asks for the cluster mode**.\
+If you select `multi`, the backend is automatically set to **Consul**, three Vault nodes are launched, and they are initialized and unsealed as a cluster.\
+You'll get a single Consul instance and three Vault API endpoints (`8200`, `8201`, `8202`) ready for HA experiments.
 
 * * * * *
 
 ✨ Quick Start
 -------------
 
-To launch the lab, open a terminal and run these three commands:
+Run these three commands:
 
-```
-# 1. Clone the repository
+`# 1. Clone the repository
 git clone https://github.com/marcogomiero/zero-to-hashicorp-labs.git
 
 # 2. Change into the directory
 cd zero-to-hashicorp-labs
 
-# 3. Start the lab!
-./vault-lab-ctl.sh start
-```
+# 3. Start the lab
+./vault-lab-ctl.sh start`
 
-The script will handle everything: it will check for dependencies, download the necessary binaries, start the servers, and provide you with all the credentials you need to get started.
+The script checks dependencies, downloads the latest Vault and Consul binaries, starts the servers, and prints all credentials you need.
 
 * * * * *
 
 📜 Key Features
 ---------------
 
-The lab managed by `vault-lab-ctl.sh` is not just a running process, but a pre-configured environment designed to be immediately useful.
+-   **Automated Setup** -- verifies prerequisites (curl, jq, unzip, lsof) and installs them if missing. Downloads and updates the latest Vault and Consul.
 
--   **Automated Setup**: The script checks for prerequisites (`curl`, `jq`, etc.) and offers to install them. It automatically downloads and updates the latest versions of Vault and Consul.
--   **Flexible Backend**: You can choose between a **file** backend (simple and fast) or a **Consul** instance (more similar to a real-world scenario). If you don't specify a backend, you will be prompted interactively on the first run.
--   **Pre-configured & Ready-to-Use**:
-    -   Vault is automatically **initialized** and **unsealed**.
-    -   The most common secrets engines are enabled: **KV v2** (at `secret/`) and **PKI** (at `pki/`).
-    -   Two authentication methods are configured:
-        -   **Userpass**: with a test user `devuser` / `devpass`.
-        -   **AppRole**: with a `web-application` role and its initial credentials (Role ID and Secret ID).
-    -   An example secret is created at `secret/test-secret` for your initial tests.
--   **Backup & Restore System**: Save and restore your lab configurations with full state preservation, metadata tracking, and sharing capabilities.
+-   **Flexible Backend** -- choose File or Consul for single mode.\
+    *If you select multi-node, Consul is enforced automatically.*
+
+-   **New Multi-Node Cluster** -- optional 3-node Vault cluster with a shared Consul backend for true HA testing.
+
+-   **Pre-Configured & Ready**
+
+    -   Vault initialized and unsealed automatically
+
+    -   KV v2 (`secret/`) and PKI (`pki/`) engines enabled
+
+    -   Userpass and AppRole authentication set up
+
+    -   Example secret at `secret/test-secret`
+
+-   **Backup & Restore System** -- full state preservation with metadata, export/import, and SHA256 integrity checks.
 
 * * * * *
 
-⚙️ Lab Management (Commands)
-----------------------------
-
-Use the `vault-lab-ctl.sh` script to manage the entire lifecycle of your test environment.
-
-### Core Commands
+⚙️ Lab Management Commands
+--------------------------
 
 | Command | Options | Description |
 | --- | --- | --- |
-| **`start`** | `--backend`, `--clean` | **(Default)** Starts and configures the environment. Asks for confirmation if a lab already exists. |
-| **`stop`** |  | Stops the Vault and Consul (if active) processes. |
-| **`restart`** |  | Restarts the processes and unseals Vault again. Does not delete data. |
-| **`status`** |  | Shows the current status of the processes (running/stopped, sealed/unsealed). |
-| **`reset`** | `--backend` | **Destructive action.** Deletes all data and starts over from a clean configuration. |
-| **`cleanup`** |  | **Destructive action.** Stops all processes and deletes all lab files and folders. |
-| **`shell`** |  | Opens an interactive shell with environment variables (`VAULT_ADDR`, `VAULT_TOKEN`) already set. |
+| **start** | `--backend`, `--cluster`, `--clean` | Starts and configures the environment. Prompts for cluster mode first. Forces `--backend consul` when `--cluster multi` is chosen. |
+| **stop** |  | Stops Vault and Consul processes. |
+| **restart** |  | Restarts processes and unseals Vault again without data loss. |
+| **status** |  | Shows running/stopped and sealed/unsealed status. |
+| **reset** | `--backend`, `--cluster` | Destroys all data and starts fresh. |
+| **cleanup** |  | Stops all processes and deletes all lab files and folders. |
+| **shell** |  | Opens an interactive shell with `VAULT_ADDR` and `VAULT_TOKEN` set. |
 
-### Backup & Restore Commands
+### Backup & Restore
 
 | Command | Description |
 | --- | --- |
-| **`backup [name] [description]`** | Create a backup of the current lab state. If no name is provided, generates a timestamp-based name. |
-| **`restore <name> [--force]`** | Restore from a specific backup. Use `--force` to skip confirmation prompts. |
-| **`list-backups`** | Display all available backups with metadata (date, backend type, size). |
-| **`delete-backup <name> [--force]`** | Delete a specific backup. Use `--force` to skip confirmation. |
-| **`export-backup <name> [path]`** | Export a backup to a compressed tar.gz file for sharing or archiving. |
-| **`import-backup <path> [name]`** | Import a backup from a tar.gz file. Optionally specify a new name. |
-
-### Options
-
-| Option | Values | Description |
-| --- | --- | --- |
-| **`--backend`** | `file` | `consul` | Select storage backend |
-| **`--clean`** |  | Used with `start`, forces a lab cleanup without asking for confirmation |
-| **`--verbose`** |  | Enables debug logs for more detailed troubleshooting |
-| **`--no-color`** |  | Disables colored output, useful for logging or integration with other scripts |
-| **`--help`** |  | Displays the help message with all commands and options |
+| `backup [name] [description]` | Create a backup of the current lab state. |
+| `restore <name> [--force]` | Restore from a specific backup. |
+| `list-backups` | Show all backups with metadata. |
+| `delete-backup <name> [--force]` | Delete a specific backup. |
+| `export-backup <name> [path]` | Export a backup to a compressed tar.gz file. |
+| `import-backup <path> [name]` | Import a backup from a tar.gz file. |
 
 * * * * *
 
-💾 Backup & Restore System
---------------------------
+💡 Example Multi-Node Start
+---------------------------
 
-The backup system allows you to save, restore, and share lab configurations with complete state preservation.
+`# Three Vault nodes + Consul
+./vault-lab-ctl.sh start --cluster multi`
 
-### Basic Usage
+You will see three Vault endpoints:
 
-bash
+-   <http://127.0.0.1:8200>
 
-```
-# Create a backup with automatic naming
-./vault-lab-ctl.sh backup
+-   <http://127.0.0.1:8201>
 
-# Create a named backup with description
-./vault-lab-ctl.sh backup my-working-setup "KV and PKI configured"
+-   <http://127.0.0.1:8202>
 
-# List all available backups
-./vault-lab-ctl.sh list-backups
+Consul UI will be available at:
 
-# Restore from a backup
-./vault-lab-ctl.sh restore my-working-setup
-
-# Export backup for sharing
-./vault-lab-ctl.sh export-backup my-working-setup ./my-config.tar.gz
-
-# Import shared backup
-./vault-lab-ctl.sh import-backup ./received-config.tar.gz team-config
-```
-
-### What Gets Backed Up
-
-**Hot Backups** (lab running):
-
--   All Vault data files and configuration
--   API-exported policies, auth methods, and secrets engines
--   Consul data and KV store (if using consul backend)
--   Lab configuration and credentials
-
-**Cold Backups** (lab stopped):
-
--   All data files and configurations
--   Lab state and credentials
-
-### Backup Features
-
--   **Integrity Verification**: SHA256 checksums ensure backup integrity
--   **Rich Metadata**: Tracks creation date, backend type, versions, and descriptions
--   **Smart Naming**: Automatic timestamp-based names or custom names
--   **Export/Import**: Share configurations via compressed archives
--   **Safety Checks**: Confirmation prompts for destructive operations
-
-### Example Workflow
-
-bash
-
-```
-# Start with a clean lab
-./vault-lab-ctl.sh start
-
-# Configure your policies and secrets
-./vault-lab-ctl.sh shell
-vault policy write my-policy - <<EOF
-path "secret/data/myapp/*" {
-  capabilities = ["read", "list"]
-}
-EOF
-
-# Save your working configuration
-./vault-lab-ctl.sh backup production-ready "Configured policies and auth"
-
-# Later, quickly restore to this state
-./vault-lab-ctl.sh restore production-ready
-```
+-   <http://127.0.0.1:8500>
 
 * * * * *
 
-✅ What to Expect (Example Output)
----------------------------------
+💾 Backup & Restore Highlights
+------------------------------
 
-After running the `start` (or `restart`) command, you will receive a clear summary with all the information needed to start using the lab.
+-   Hot or cold backups with full Vault/Consul state.
 
-```
---- ACCESS DETAILS ---
-  🔗 Vault UI: http://127.0.0.1:8200 (Accessible from WSL)
-  🔑 Vault Root Token: hvs.xxxxxxxxxxxxxxxx
-  ---
-  🔗 Consul UI: http://172.27.184.124:8500 (Accessible from your Windows browser)
-  🔑 Consul ACL Token: a1b2c3d4-e5f6-.... (Use this to log in to the UI)
+-   Integrity verification with SHA256.
 
---- EXAMPLE USAGE ---
-  Run the built-in shell for a pre-configured environment:
-    ./vault-lab-ctl.sh shell
+-   Automatic timestamp names or custom names.
 
-  Test User (userpass):
-    Username: devuser
-    Password: devpass
-
-  AppRole Credentials (for 'web-application' role):
-    Role ID:   e9d29b1b-....
-    Secret ID: 6a9f3d9e-....
-
-  Example CLI Commands (run inside the lab shell):
-    # Read the example secret
-    vault kv get secret/test-secret
-
-    # To use the consul CLI, export the token:
-    export CONSUL_HTTP_TOKEN="a1b2c3d4-e5f6-...."
-    consul members
-```
+-   Export/import for easy sharing.
 
 * * * * *
 
 🛠️ Prerequisites
 -----------------
 
-To run the script, the following tools are required. Don't worry, the script will check for them and offer to install any that are missing.
+-   bash
 
--   `bash`
--   `curl`
--   `jq`
--   `unzip`
--   `lsof`
+-   curl
 
-Please also ensure that ports **8200** (for Vault) and **8500** (for Consul, if used) are available.
+-   jq
 
-* * * * *
+-   unzip
 
-🌳 Directory Structure (After Setup)
-------------------------------------
+-   lsof
 
-After startup, the following directories will be created to hold the binaries, data, and configurations.
-
-```
-zero-to-hashicorp-labs/
-├── bin/
-│   ├── vault                   # Vault binary
-│   └── consul                  # Consul binary (if used)
-├── vault-data/                 # Vault data (logs, tokens, keys, storage...)
-├── consul-data/                # Consul data (logs, tokens, storage...)
-├── backups/                    # Backup storage directory
-│   ├── backup_20240115_103000/ # Example timestamped backup
-│   └── my-working-setup/       # Example named backup
-├── lib/                        # Internal script libraries
-├── vault-lab-ctl.sh            # The control script
-└── README.md                   # This file
-```
+The script checks and installs anything missing.\
+Ensure ports **8200** (Vault) and **8500** (Consul) are free.
 
 * * * * *
 
-🚀 Common Use Cases
--------------------
+🌳 Directory Structure After Setup
+----------------------------------
 
-### Development Scenarios
+`zero-to-hashicorp-labs/
+├── bin/               # Vault and Consul binaries
+├── vault-data/        # Vault data, logs, tokens
+├── consul-data/       # Consul data (if used)
+├── backups/           # Backups
+├── lib/               # Script libraries
+├── vault-lab-ctl.sh   # Control script
+└── README.md`
 
-**API Development**: Use the pre-configured AppRole for testing application authentication flows.
+* * * * *
 
-**Policy Testing**: Create and test complex Vault policies in a safe environment.
+🚀 Typical Workflows
+--------------------
 
-**Secrets Management**: Experiment with different secrets engines and rotation strategies.
+-   **Single Node Lab** -- fast experiments with a simple file or Consul backend.
 
-### Learning & Training
+-   **3-Node Cluster** -- simulate production-style HA with Consul backend.
 
-**Vault Fundamentals**: Learn Vault concepts with a pre-configured, working environment.
+-   **Policy & Auth Testing** -- create and test Vault policies safely.
 
-**Configuration Management**: Practice Vault configuration without fear of breaking production.
+-   **Integration Testing** -- validate your application against a realistic Vault cluster.
 
-**Team Training**: Share identical lab environments using the export/import feature.
-
-### Experimentation
-
-**Feature Testing**: Quickly test new Vault features or configuration approaches.
-
-**Integration Testing**: Test Vault integration with your applications in a controlled environment.
-
-**Backup & Recovery**: Practice disaster recovery scenarios with the backup/restore system.
+-   **Backup & Recovery** -- practice disaster recovery using built-in backup/restore.
 
 * * * * *
 
 ⚠️ Disclaimer
 -------------
 
-This script is intended **exclusively for lab, development, and testing purposes**. **IT MUST NOT BE USED IN PRODUCTION ENVIRONMENTS.** The default configurations are intentionally insecure to maximize ease of use in a controlled environment.
+This project is **for lab and development use only**.\
+It is intentionally insecure to maximize ease of use. **Never run in production**.
