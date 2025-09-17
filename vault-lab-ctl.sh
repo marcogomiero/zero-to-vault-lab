@@ -19,7 +19,7 @@ LAB_CONFIG_FILE="$BASE_DIR/vault-lab-ctl.conf"
 AUDIT_LOG_PATH="/dev/null"
 
 # --- CLUSTER ---
-CLUSTER_MODE=""   # single | multi, scelto da --cluster o da prompt
+CLUSTER_MODE=""   # single | multi, via --cluster or prompt
 
 # --- Script Behavior Flags ---
 FORCE_CLEANUP_ON_START=false
