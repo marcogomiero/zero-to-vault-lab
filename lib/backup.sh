@@ -18,7 +18,7 @@ list_backups() {
 
     echo -e "\n${YELLOW}Available backups:${NC}"
     echo "----------------------------------------"
-    printf "%-25s %-15s %-12s %s\n" "NAME" "BACKEND" "SIZE" "DATE"
+    printf "%-25s %-15s %-8s %-12s %s\n" "NAME" "BACKEND" "TLS" "SIZE" "DATE"
     echo "----------------------------------------"
 
     for backup_path in "$BACKUP_DIR"/*; do
@@ -28,12 +28,14 @@ list_backups() {
 
             if [ -f "$metadata_file" ]; then
                 local backend_type=$(jq -r '.backend_type // "unknown"' "$metadata_file" 2>/dev/null)
+                local tls_enabled=$(jq -r '.tls_enabled // false' "$metadata_file" 2>/dev/null)
                 local created_date=$(jq -r '.created_date // "unknown"' "$metadata_file" 2>/dev/null)
                 local size=$(du -sh "$backup_path" 2>/dev/null | cut -f1)
+                local tls_status=$([ "$tls_enabled" = "true" ] && echo "YES" || echo "NO")
 
-                printf "%-25s %-15s %-12s %s\n" "$backup_name" "$backend_type" "$size" "$created_date"
+                printf "%-25s %-15s %-8s %-12s %s\n" "$backup_name" "$backend_type" "$tls_status" "$size" "$created_date"
             else
-                printf "%-25s %-15s %-12s %s\n" "$backup_name" "unknown" "?" "No metadata"
+                printf "%-25s %-15s %-8s %-12s %s\n" "$backup_name" "unknown" "?" "?" "No metadata"
             fi
         fi
     done
@@ -84,6 +86,12 @@ create_backup() {
         if [ "$lab_running" = true ] && [ -f "$VAULT_DIR/root_token.txt" ]; then
             log_info "Exporting Vault configuration via API..."
             export VAULT_ADDR="$VAULT_ADDR"
+
+            # Imposta VAULT_CACERT se TLS è abilitato
+            if [ "$ENABLE_TLS" = true ] && [ -f "$CA_CERT" ]; then
+                export VAULT_CACERT="$CA_CERT"
+            fi
+
             export VAULT_TOKEN=$(cat "$VAULT_DIR/root_token.txt")
             local vault_exe=$(get_vault_exe)
 
@@ -111,11 +119,23 @@ create_backup() {
         if [ "$lab_running" = true ] && [ -f "$CONSUL_DIR/acl_master_token.txt" ]; then
             log_info "Exporting Consul KV store..."
             export CONSUL_HTTP_TOKEN=$(cat "$CONSUL_DIR/acl_master_token.txt")
+
+            # Imposta CONSUL_CACERT se TLS è abilitato
+            if [ "$ENABLE_TLS" = true ] && [ -f "$CA_CERT" ]; then
+                export CONSUL_CACERT="$CA_CERT"
+            fi
+
             local consul_exe=$(get_consul_exe)
 
             mkdir -p "$backup_path/consul_export"
             "$consul_exe" kv export > "$backup_path/consul_export/kv_export.json" 2>/dev/null || true
         fi
+    fi
+
+    # Backup dei certificati TLS (se presente)
+    if [ "$ENABLE_TLS" = true ] && [ -d "$TLS_DIR" ]; then
+        log_info "Backing up TLS certificates..."
+        cp -r "$TLS_DIR" "$backup_path/tls-data" || log_error "Failed to backup TLS data"
     fi
 
     # Backup della configurazione del lab
@@ -130,6 +150,8 @@ create_backup() {
         \"description\": \"${backup_description:-""}\",
         \"created_date\": \"$(date -Iseconds)\",
         \"backend_type\": \"$BACKEND_TYPE\",
+        \"tls_enabled\": $ENABLE_TLS,
+        \"cluster_mode\": \"$CLUSTER_MODE\",
         \"lab_was_running\": $lab_running,
         \"vault_version\": \"$(get_vault_exe --version 2>/dev/null | head -n1 | awk '{print $2}' || echo "unknown")\",
         \"consul_version\": \"$([ "$BACKEND_TYPE" == "consul" ] && get_consul_exe --version 2>/dev/null | head -n1 | awk '{print $2}' || echo "n/a")\",
@@ -147,7 +169,7 @@ create_backup() {
     find "$backup_path" -type f -exec sha256sum {} \; | sort > "$backup_path/checksums.sha256"
 
     local backup_size=$(du -sh "$backup_path" | cut -f1)
-    log_info "Backup '$backup_name' completed successfully! Size: $backup_size ✅"
+    log_info "Backup '$backup_name' completed successfully! Size: $backup_size"
     log_info "Backup location: $backup_path"
 }
 
@@ -176,19 +198,23 @@ restore_backup() {
         if ! (cd "$backup_path" && sha256sum -c checksums.sha256 --quiet); then
             log_error "Backup integrity check failed! The backup might be corrupted."
         fi
-        log_info "Backup integrity verified ✅"
+        log_info "Backup integrity verified"
     else
         log_warn "No integrity checksums found. Proceeding without verification."
     fi
 
     # Leggi i metadati
     local backup_backend=$(jq -r '.backend_type // "unknown"' "$metadata_file" 2>/dev/null)
+    local backup_tls=$(jq -r '.tls_enabled // false' "$metadata_file" 2>/dev/null)
+    local backup_cluster=$(jq -r '.cluster_mode // "single"' "$metadata_file" 2>/dev/null)
     local backup_date=$(jq -r '.created_date // "unknown"' "$metadata_file" 2>/dev/null)
     local backup_desc=$(jq -r '.description // ""' "$metadata_file" 2>/dev/null)
 
     log_info "RESTORING BACKUP: $backup_name"
     log_info "Created: $backup_date"
     log_info "Backend: $backup_backend"
+    log_info "TLS: $([ "$backup_tls" = "true" ] && echo "enabled" || echo "disabled")"
+    log_info "Cluster: $backup_cluster"
     [ -n "$backup_desc" ] && log_info "Description: $backup_desc"
 
     # Controllo di sicurezza
@@ -208,7 +234,7 @@ restore_backup() {
 
     # Pulisci l'ambiente corrente
     log_info "Cleaning current environment..."
-    rm -rf "$VAULT_DIR" "$CONSUL_DIR" "$LAB_CONFIG_FILE" 2>/dev/null || true
+    rm -rf "$VAULT_DIR" "$CONSUL_DIR" "$TLS_DIR" "$LAB_CONFIG_FILE" 2>/dev/null || true
 
     # Ripristina i dati
     if [ -d "$backup_path/vault-data" ]; then
@@ -221,15 +247,21 @@ restore_backup() {
         cp -r "$backup_path/consul-data" "$CONSUL_DIR" || log_error "Failed to restore Consul data"
     fi
 
+    if [ -d "$backup_path/tls-data" ]; then
+        log_info "Restoring TLS certificates..."
+        cp -r "$backup_path/tls-data" "$TLS_DIR" || log_error "Failed to restore TLS data"
+    fi
+
     if [ -f "$backup_path/$(basename "$LAB_CONFIG_FILE")" ]; then
         log_info "Restoring lab configuration..."
         cp "$backup_path/$(basename "$LAB_CONFIG_FILE")" "$LAB_CONFIG_FILE" || log_error "Failed to restore lab configuration"
     fi
 
-    # Aggiorna il backend type dalla configurazione ripristinata
+    # Aggiorna le variabili dalle configurazioni ripristinate
     load_backend_type_from_config
+    [ -n "$ENABLE_TLS" ] && log_info "Restored TLS setting: $ENABLE_TLS"
 
-    log_info "Backup '$backup_name' restored successfully! ✅"
+    log_info "Backup '$backup_name' restored successfully!"
     log_info "You can now start the lab with: $0 start"
 }
 
@@ -252,7 +284,8 @@ delete_backup() {
     if [ -f "$metadata_file" ]; then
         local backup_date=$(jq -r '.created_date // "unknown"' "$metadata_file" 2>/dev/null)
         local backup_backend=$(jq -r '.backend_type // "unknown"' "$metadata_file" 2>/dev/null)
-        log_info "Backup details - Date: $backup_date, Backend: $backup_backend"
+        local backup_tls=$(jq -r '.tls_enabled // false' "$metadata_file" 2>/dev/null)
+        log_info "Backup details - Date: $backup_date, Backend: $backup_backend, TLS: $backup_tls"
     fi
 
     # Controllo di sicurezza
@@ -267,7 +300,7 @@ delete_backup() {
 
     log_info "Deleting backup '$backup_name'..."
     rm -rf "$backup_path" || log_error "Failed to delete backup"
-    log_info "Backup '$backup_name' deleted successfully! ✅"
+    log_info "Backup '$backup_name' deleted successfully!"
 }
 
 export_backup() {
@@ -295,7 +328,7 @@ export_backup() {
     tar -czf "$export_path" -C "$BACKUP_DIR" "$backup_name" || log_error "Failed to create export archive"
 
     local export_size=$(du -sh "$export_path" | cut -f1)
-    log_info "Backup exported successfully! Size: $export_size ✅"
+    log_info "Backup exported successfully! Size: $export_size"
     log_info "Export location: $export_path"
 }
 
@@ -336,6 +369,6 @@ import_backup() {
         mv "$BACKUP_DIR/$extracted_name" "$backup_path" || log_error "Failed to rename imported backup"
     fi
 
-    log_info "Backup imported successfully! ✅"
+    log_info "Backup imported successfully!"
     log_info "You can now restore it with: $0 restore $backup_name"
 }

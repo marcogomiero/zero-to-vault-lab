@@ -8,8 +8,8 @@ wait_for_vault_up() {
   local addr=$1; local timeout=${2:-30}; local elapsed=0
   log_info "In attesa che Vault sia raggiungibile su $addr (timeout: ${timeout}s)..."
   while [[ $elapsed -lt $timeout ]]; do
-    if curl -s -o /dev/null -w "%{http_code}" "$addr/v1/sys/seal-status" | grep -q "200"; then
-      log_info "Vault raggiungibile dopo ${elapsed}s ✅"; return 0
+    if curl -s -o /dev/null -w "%{http_code}" "$addr/v1/sys/seal-status" ${VAULT_CACERT:+--cacert "$VAULT_CACERT"} | grep -q "200"; then
+      log_info "Vault raggiungibile dopo ${elapsed}s"; return 0
     fi
     sleep 1; echo -n "."; elapsed=$((elapsed + 1))
   done
@@ -22,11 +22,40 @@ wait_for_unseal_ready() {
   while [[ $elapsed -lt $timeout ]]; do
     local status_json=$(get_vault_status)
     if echo "$status_json" | jq -e '.initialized == true and .sealed == false' &>/dev/null; then
-      log_info "Vault is unsealed and operational. ✅"; return 0
+      log_info "Vault is unsealed and operational."; return 0
     fi
     sleep 1; echo -n "."; ((elapsed++))
   done
   log_error "\nVault did not become operational after $timeout seconds."
+}
+
+wait_for_vault_ready() {
+    local max_attempts=15
+    local attempt=1
+
+    log_info "Waiting for Vault to be fully ready..."
+
+    while [ $attempt -le $max_attempts ]; do
+        # Prova una chiamata API semplice invece del status JSON
+        if [ "$ENABLE_TLS" = true ]; then
+            local response=$(curl -s -w "%{http_code}" -o /dev/null --cacert "$CA_CERT" -H "X-Vault-Token: $(cat "$VAULT_DIR/root_token.txt")" "$VAULT_ADDR/v1/sys/health" 2>/dev/null || echo "000")
+        else
+            local response=$(curl -s -w "%{http_code}" -o /dev/null -H "X-Vault-Token: $(cat "$VAULT_DIR/root_token.txt")" "$VAULT_ADDR/v1/sys/health" 2>/dev/null || echo "000")
+        fi
+
+        # Vault health check restituisce 200 se unsealed e ready
+        if [ "$response" = "200" ]; then
+            log_info "Vault is ready after $attempt attempts."
+            return 0
+        fi
+
+        log_debug "Attempt $attempt: HTTP response code: $response"
+        sleep 3
+        ((attempt++))
+    done
+
+    log_warn "Vault readiness check timed out after $max_attempts attempts, proceeding anyway..."
+    return 0  # Non blocchiamo il processo, procediamo comunque
 }
 
 stop_vault() {
@@ -36,7 +65,7 @@ stop_vault() {
             kill "$pid" 2>/dev/null || true
         done < "$VAULT_DIR/vault_pids"
         rm -f "$VAULT_DIR/vault_pids"
-        log_info "All Vault nodes stopped. ✅"
+        log_info "All Vault nodes stopped."
         return
     fi
     local vault_port=$(echo "$VAULT_ADDR" | cut -d':' -f3)
@@ -45,7 +74,12 @@ stop_vault() {
 
 get_vault_status() {
     local vault_exe=$(get_vault_exe)
-    VAULT_ADDR="$VAULT_ADDR" "$vault_exe" status -format=json 2>/dev/null
+    # Assicurati che le variabili ambiente siano impostate correttamente
+    if [ "$ENABLE_TLS" = true ]; then
+        VAULT_ADDR="$VAULT_ADDR" VAULT_CACERT="$CA_CERT" "$vault_exe" status -format=json 2>/dev/null
+    else
+        VAULT_ADDR="$VAULT_ADDR" "$vault_exe" status -format=json 2>/dev/null
+    fi
 }
 
 configure_and_start_vault() {
@@ -80,6 +114,19 @@ EOF
     wait_for_vault_up "$VAULT_ADDR"
 }
 
+start_vault_with_tls() {
+    log_info "Starting Vault server with TLS in background..."
+    local vault_exe=$(get_vault_exe)
+
+    # Imposta le variabili ambiente per TLS
+    export VAULT_CACERT="$CA_CERT"
+
+    "$vault_exe" server -config="$VAULT_DIR/config.hcl" > "$VAULT_DIR/vault.log" 2>&1 &
+    echo $! > "$LAB_VAULT_PID_FILE"
+    log_info "Vault PID saved to $LAB_VAULT_PID_FILE"
+    wait_for_vault_up "$VAULT_ADDR"
+}
+
 # --- CLUSTER ---
 start_vault_nodes() {
     log_info "CONFIGURING AND STARTING 3-NODE VAULT CLUSTER (Consul backend)"
@@ -106,9 +153,65 @@ EOF
     done
 }
 
+start_vault_nodes_with_tls() {
+    log_info "CONFIGURING AND STARTING 3-NODE VAULT CLUSTER WITH TLS (Consul backend)"
+    stop_vault
+    local consul_token=$(cat "$CONSUL_DIR/acl_master_token.txt")
+    rm -f "$VAULT_DIR/vault_pids"
+
+    for i in 1 2 3; do
+        local port=$((8200 + i - 1))
+        local cluster_port=$((8300 + i - 1))
+        local node_dir="$VAULT_DIR/node_$i"
+        mkdir -p "$node_dir"
+
+        # Genera certificato per questo nodo
+        generate_vault_certificate "vault-node$i" "127.0.0.1"
+
+        cat > "$node_dir/config.hcl" <<EOF
+storage "consul" {
+    address = "127.0.0.1:8500"
+    path = "vault/"
+    token = "$consul_token"
+    scheme = "https"
+    tls_ca_file = "$CA_CERT"
+}
+listener "tcp" {
+    address = "127.0.0.1:$port"
+    tls_cert_file = "$CERTS_DIR/vault-node$i.pem"
+    tls_key_file = "$CERTS_DIR/vault-node$i-key.pem"
+    tls_ca_file = "$CA_CERT"
+}
+api_addr = "https://127.0.0.1:$port"
+cluster_addr = "https://127.0.0.1:$cluster_port"
+ui = true
+EOF
+
+        local vault_exe=$(get_vault_exe)
+        VAULT_CACERT="$CA_CERT" "$vault_exe" server -config="$node_dir/config.hcl" > "$node_dir/vault.log" 2>&1 &
+        echo $! >> "$VAULT_DIR/vault_pids"
+        log_info "Vault node $i started on port $port with TLS"
+
+        # Wait for this node to start
+        export VAULT_CACERT="$CA_CERT"
+        wait_for_vault_up "https://127.0.0.1:$port"
+    done
+
+    # Aggiorna VAULT_ADDR per il primo nodo
+    VAULT_ADDR="https://127.0.0.1:8200"
+    export VAULT_CACERT="$CA_CERT"
+    export VAULT_ADDR="$VAULT_ADDR"
+}
+
 initialize_and_unseal_vault() {
     log_info "INITIALIZING AND UNSEALING VAULT"
+
+    # Imposta le variabili ambiente per TLS se abilitato
+    if [ "$ENABLE_TLS" = true ]; then
+        export VAULT_CACERT="$CA_CERT"
+    fi
     export VAULT_ADDR="$VAULT_ADDR"
+
     local vault_exe=$(get_vault_exe)
     local status_json=$(get_vault_status)
 
@@ -121,23 +224,38 @@ initialize_and_unseal_vault() {
         local unseal_key=$(echo "$init_output" | jq -r '.unseal_keys_b64[0]')
         echo "$root_token" > "$VAULT_DIR/root_token.txt"
         echo "$unseal_key" > "$VAULT_DIR/unseal_key.txt"
-        log_info "Vault initialized. Root Token and Unseal Key saved. 🔑"
+        log_info "Vault initialized. Root Token and Unseal Key saved."
         log_warn "INSECURE: Credentials are saved in plain text in $VAULT_DIR."
     fi
 
+    # Ricontrolla lo status dopo l'inizializzazione
     status_json=$(get_vault_status)
     if [ "$(echo "$status_json" | jq -r '.sealed')" == "true" ]; then
         log_info "Vault is sealed. Unsealing..."
         local unseal_key=$(cat "$VAULT_DIR/unseal_key.txt")
-        # --- CLUSTER ---
+
         if [ "$CLUSTER_MODE" = "multi" ]; then
             for port in 8200 8201 8202; do
-                VAULT_ADDR="http://127.0.0.1:$port" "$vault_exe" operator unseal "$unseal_key" >/dev/null
+                local node_addr="$(echo "$VAULT_ADDR" | sed 's/8200/'$port'/')"
+                if [ "$ENABLE_TLS" = true ]; then
+                    VAULT_ADDR="$node_addr" VAULT_CACERT="$CA_CERT" "$vault_exe" operator unseal "$unseal_key" >/dev/null
+                else
+                    VAULT_ADDR="$node_addr" "$vault_exe" operator unseal "$unseal_key" >/dev/null
+                fi
                 log_info "Node on port $port unsealed."
             done
         else
             "$vault_exe" operator unseal "$unseal_key" >/dev/null
-            log_info "Vault unsealed successfully. ✅"
+            log_info "Vault unsealed successfully."
+        fi
+
+        # Aspetta un momento per stabilizzazione
+        sleep 5
+
+        # Verifica di nuovo lo status
+        status_json=$(get_vault_status)
+        if [ "$(echo "$status_json" | jq -r '.sealed')" == "true" ]; then
+            log_error "Vault is still sealed after unseal operation. Check logs."
         fi
     else
         log_info "Vault is already unsealed."
@@ -145,20 +263,42 @@ initialize_and_unseal_vault() {
 
     wait_for_unseal_ready "$VAULT_ADDR"
     export VAULT_TOKEN=$(cat "$VAULT_DIR/root_token.txt")
+
+    # Attendi che Vault sia completamente pronto
+    wait_for_vault_ready
+
+    # Debug: mostra status finale
+    local final_status=$(get_vault_status)
+    log_debug "Final Vault status: sealed=$(echo "$final_status" | jq -r '.sealed'), initialized=$(echo "$final_status" | jq -r '.initialized')"
 }
 
 configure_vault_features() {
     log_info "CONFIGURING COMMON VAULT FEATURES"
+
+    # Verifica che Vault sia unsealed prima di procedere
+    local status_json=$(get_vault_status)
+    if [ "$(echo "$status_json" | jq -r '.sealed')" == "true" ]; then
+        log_error "Cannot configure Vault features: Vault is sealed!"
+        return 1
+    fi
+
+    # Assicurati che le variabili ambiente siano impostate
+    if [ "$ENABLE_TLS" = true ]; then
+        export VAULT_CACERT="$CA_CERT"
+    fi
+    export VAULT_ADDR="$VAULT_ADDR"
+    export VAULT_TOKEN=$(cat "$VAULT_DIR/root_token.txt")
+
     local vault_exe=$(get_vault_exe)
 
     # --- KV v2 ---
     log_info " - Enabling KV v2 secrets engine at 'secret/'"
-    "$vault_exe" secrets enable -path=secret kv-v2 &>/dev/null
+    "$vault_exe" secrets enable -path=secret kv-v2 &>/dev/null || log_warn "Failed to enable KV v2 engine"
 
     # --- PKI ---
     log_info " - Enabling PKI secrets engine at 'pki/'"
-    "$vault_exe" secrets enable pki &>/dev/null
-    "$vault_exe" secrets tune -max-lease-ttl=87600h pki &>/dev/null
+    "$vault_exe" secrets enable pki &>/dev/null || log_warn "Failed to enable PKI engine"
+    "$vault_exe" secrets tune -max-lease-ttl=87600h pki &>/dev/null || log_warn "Failed to tune PKI engine"
 
     # --- Policies and Auth ---
     log_info " - Creating 'dev-policy' for test users..."
@@ -170,14 +310,14 @@ configure_vault_features() {
     }
     path "secret/metadata/*" {
       capabilities = ["create","read","update","delete","list","patch","sudo"]
-    }' | "$vault_exe" policy write dev-policy -
+    }' | "$vault_exe" policy write dev-policy - || log_warn "Failed to create dev-policy"
 
     log_info " - Enabling Userpass authentication..."
-    "$vault_exe" auth enable userpass &>/dev/null
-    "$vault_exe" write auth/userpass/users/devuser password=devpass policies="default,dev-policy" &>/dev/null
+    "$vault_exe" auth enable userpass &>/dev/null || log_warn "Failed to enable userpass auth"
+    "$vault_exe" write auth/userpass/users/devuser password=devpass policies="default,dev-policy" &>/dev/null || log_warn "Failed to create devuser"
 
     log_info " - Enabling and configuring AppRole Auth Method..."
-    "$vault_exe" auth enable approle &>/dev/null
+    "$vault_exe" auth enable approle &>/dev/null || log_warn "Failed to enable approle auth"
     echo 'path "secret/*" {
       capabilities = ["list"]
     }
@@ -186,18 +326,24 @@ configure_vault_features() {
     }
     path "secret/metadata/my-app/*" {
       capabilities = ["create","read","update","delete","list","patch","sudo"]
-    }' | "$vault_exe" policy write my-app-policy -
-    "$vault_exe" write auth/approle/role/web-application token_policies="default,my-app-policy"
-    local role_id=$("$vault_exe" read -field=role_id auth/approle/role/web-application/role-id)
-    local secret_id=$("$vault_exe" write -f -field=secret_id auth/approle/role/web-application/secret-id)
-    echo "$role_id" > "$VAULT_DIR/approle_role_id.txt"
-    echo "$secret_id" > "$VAULT_DIR/approle_secret_id.txt"
+    }' | "$vault_exe" policy write my-app-policy - || log_warn "Failed to create my-app-policy"
+
+    "$vault_exe" write auth/approle/role/web-application token_policies="default,my-app-policy" || log_warn "Failed to create approle role"
+    local role_id=$("$vault_exe" read -field=role_id auth/approle/role/web-application/role-id 2>/dev/null || echo "")
+    local secret_id=$("$vault_exe" write -f -field=secret_id auth/approle/role/web-application/secret-id 2>/dev/null || echo "")
+
+    if [ -n "$role_id" ]; then
+        echo "$role_id" > "$VAULT_DIR/approle_role_id.txt"
+    fi
+    if [ -n "$secret_id" ]; then
+        echo "$secret_id" > "$VAULT_DIR/approle_secret_id.txt"
+    fi
 
     log_info " - Enabling file audit device to $AUDIT_LOG_PATH"
-    "$vault_exe" audit enable file file_path="$AUDIT_LOG_PATH" &>/dev/null
+    "$vault_exe" audit enable file file_path="$AUDIT_LOG_PATH" &>/dev/null || log_warn "Failed to enable audit device"
 
     log_info " - Writing test secret to secret/test-secret"
-    "$vault_exe" kv put secret/test-secret message="Hello from Vault!" username="testuser" &>/dev/null
+    "$vault_exe" kv put secret/test-secret message="Hello from Vault!" username="testuser" &>/dev/null || log_warn "Failed to write test secret"
 
     # ------------------------------------------------------------------
     # --- NEW DEMO ENGINES ---------------------------------------------
@@ -205,14 +351,13 @@ configure_vault_features() {
 
     # --- Transit engine demo ---
     log_info " - Enabling Transit secrets engine for encryption-as-a-service"
-    "$vault_exe" secrets enable transit &>/dev/null
-    "$vault_exe" write -f transit/keys/lab-key &>/dev/null
+    "$vault_exe" secrets enable transit &>/dev/null || log_warn "Failed to enable transit engine"
+    "$vault_exe" write -f transit/keys/lab-key &>/dev/null || log_warn "Failed to create transit key"
     log_info "   Transit key 'lab-key' ready. Example: vault write transit/encrypt/lab-key plaintext=$(base64 <<< 'hello')"
 
     # --- Database engine demo with SQLite plugin ---
-    # This requires the sqlite-database-plugin to be available in Vault.
     log_info " - Enabling Database secrets engine (SQLite demo)"
-    "$vault_exe" secrets enable database &>/dev/null
+    "$vault_exe" secrets enable database &>/dev/null || log_warn "Failed to enable database engine"
 
     # Configure a SQLite demo database stored in the Vault data directory
     local sqlite_db_path="$VAULT_DIR/demo.db"
@@ -220,14 +365,14 @@ configure_vault_features() {
 
     "$vault_exe" write database/config/demo \
         plugin_name=sqlite-database-plugin \
-        connection_url="file:${sqlite_db_path}?mode=rwc" &>/dev/null
+        connection_url="file:${sqlite_db_path}?mode=rwc" &>/dev/null || log_warn "Failed to configure database"
 
     "$vault_exe" write database/roles/demo-role \
         db_name=demo \
         creation_statements="CREATE TABLE IF NOT EXISTS users(name TEXT); \
                              -- Vault will generate user creds automatically" \
         default_ttl="1h" \
-        max_ttl="24h" &>/dev/null
+        max_ttl="24h" &>/dev/null || log_warn "Failed to create database role"
 
     log_info "   Database engine configured with SQLite demo DB at $sqlite_db_path"
     log_info "   Try: vault read database/creds/demo-role  (dynamic creds with 1h TTL)"

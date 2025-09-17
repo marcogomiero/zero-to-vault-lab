@@ -21,6 +21,10 @@ AUDIT_LOG_PATH="/dev/null"
 # --- CLUSTER ---
 CLUSTER_MODE=""   # single | multi, via --cluster or prompt
 
+# --- TLS Configuration ---
+ENABLE_TLS=false
+TLS_ENABLED_FROM_ARG=false
+
 # --- Script Behavior Flags ---
 FORCE_CLEANUP_ON_START=false
 VERBOSE_OUTPUT=false
@@ -34,6 +38,7 @@ source "$SCRIPT_DIR/lib/dependencies.sh"
 source "$SCRIPT_DIR/lib/consul.sh"
 source "$SCRIPT_DIR/lib/vault.sh"
 source "$SCRIPT_DIR/lib/backup.sh"
+source "$SCRIPT_DIR/lib/tls.sh"
 source "$SCRIPT_DIR/lib/lifecycle.sh"
 
 # --- Execute Main Function ---

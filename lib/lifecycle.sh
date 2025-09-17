@@ -13,6 +13,7 @@ display_help() {
     echo "      --no-color                 Disable colored output."
     echo "      --backend <file|consul>    Select storage backend."
     echo "      --cluster <single|multi>   Start single node or 3-node cluster"
+    echo "      --tls                      Enable TLS/SSL encryption"
     echo ""
     echo "Commands:"
     echo "  start, stop, restart, reset, status, cleanup, shell"
@@ -26,6 +27,8 @@ display_help() {
     echo "  import-backup <path> [name]    Import backup from tar.gz file"
     echo ""
     echo "Examples:"
+    echo "  $0 --tls start                       # Start with TLS encryption"
+    echo "  $0 --cluster multi --backend consul start"
     echo "  $0 backup my-config \"Working KV setup\""
     echo "  $0 restore my-config"
     echo "  $0 list-backups"
@@ -36,7 +39,8 @@ display_help() {
 save_backend_type_to_config() {
     mkdir -p "$VAULT_DIR"
     echo "BACKEND_TYPE=\"$BACKEND_TYPE\"" > "$LAB_CONFIG_FILE"
-    echo "CLUSTER_MODE=\"$CLUSTER_MODE\"" >> "$LAB_CONFIG_FILE"   # --- CLUSTER FIX ---
+    echo "CLUSTER_MODE=\"$CLUSTER_MODE\"" >> "$LAB_CONFIG_FILE"
+    echo "ENABLE_TLS=\"$ENABLE_TLS\"" >> "$LAB_CONFIG_FILE"
 }
 
 load_backend_type_from_config() {
@@ -44,6 +48,13 @@ load_backend_type_from_config() {
         source "$LAB_CONFIG_FILE"
         log_info "Loaded backend type from config: $BACKEND_TYPE"
         [ -n "$CLUSTER_MODE" ] && log_info "Loaded cluster mode from config: $CLUSTER_MODE"
+        [ -n "$ENABLE_TLS" ] && log_info "Loaded TLS mode from config: $ENABLE_TLS"
+
+        # Aggiorna VAULT_ADDR e CONSUL_ADDR se TLS è abilitato
+        if [ "$ENABLE_TLS" = true ]; then
+            VAULT_ADDR="https://127.0.0.1:8200"
+            CONSUL_ADDR="https://127.0.0.1:8500"
+        fi
     fi
 }
 
@@ -75,6 +86,13 @@ check_lab_status() {
 
     if [ "$vault_running" = true ]; then
         log_info "Vault process is RUNNING. PID: $(cat "$LAB_VAULT_PID_FILE")"
+
+        # Imposta le variabili necessarie per il controllo dello stato
+        if [ "$ENABLE_TLS" = true ]; then
+            export VAULT_CACERT="$CA_CERT"
+        fi
+        export VAULT_ADDR="$VAULT_ADDR"
+
         local status_json=$(get_vault_status)
         if [ "$(echo "$status_json" | jq -r '.sealed')" == "false" ]; then
             log_info "Vault is UNSEALED and READY. 🎉"
@@ -92,6 +110,12 @@ check_lab_status() {
             log_info "Consul server is NOT RUNNING. 🛑"
         fi
     fi
+
+    if [ "$ENABLE_TLS" = true ]; then
+        log_info "TLS encryption is ENABLED. 🔒"
+    else
+        log_info "TLS encryption is DISABLED. 🔓"
+    fi
 }
 
 display_final_info() {
@@ -102,21 +126,38 @@ display_final_info() {
     local approle_secret_id=$(cat "$VAULT_DIR/approle_secret_id.txt" 2>/dev/null)
     local consul_token=$(cat "$CONSUL_DIR/acl_master_token.txt" 2>/dev/null)
 
+    local protocol="http"
+    local tls_note=""
+    if [ "$ENABLE_TLS" = true ]; then
+        protocol="https"
+        tls_note=" (🔒 TLS enabled)"
+    fi
+
     echo -e "\n${YELLOW}--- ACCESS DETAILS ---${NC}"
-    echo -e "  🔗 Vault UI: ${GREEN}$VAULT_ADDR${NC} (Accessibile da WSL)"
+    echo -e "  🔗 Vault UI: ${GREEN}${protocol}://${host_ip}:8200${NC}${tls_note}"
     echo -e "  🔑 Vault Root Token: ${GREEN}$vault_root_token${NC}"
 
     if [ "$BACKEND_TYPE" == "consul" ]; then
         echo -e "  ---"
-        echo -e "  🔗 Consul UI: ${GREEN}http://${host_ip}:8500${NC}"
+        echo -e "  🔗 Consul UI: ${GREEN}${protocol}://${host_ip}:8500${NC}${tls_note}"
         echo -e "  🔑 Consul ACL Token: ${GREEN}$consul_token${NC}"
     fi
 
     if [ "$CLUSTER_MODE" = "multi" ]; then
         echo -e "\n${YELLOW}Vault cluster nodes:${NC}"
-        echo "  http://127.0.0.1:8200"
-        echo "  http://127.0.0.1:8201"
-        echo "  http://127.0.0.1:8202"
+        echo "  ${protocol}://127.0.0.1:8200"
+        echo "  ${protocol}://127.0.0.1:8201"
+        echo "  ${protocol}://127.0.0.1:8202"
+    fi
+
+    if [ "$ENABLE_TLS" = true ]; then
+        echo -e "\n${YELLOW}--- TLS CERTIFICATE INFO ---${NC}"
+        echo -e "  📜 CA Certificate: ${GREEN}$CA_CERT${NC}"
+        echo -e "  📁 Certificates Directory: ${GREEN}$CERTS_DIR${NC}"
+        echo -e "\n  To trust the CA certificate:"
+        echo -e "  ${CYAN}Linux:${NC} sudo cp $CA_CERT /usr/local/share/ca-certificates/vault-lab-ca.crt && sudo update-ca-certificates"
+        echo -e "  ${CYAN}macOS:${NC} sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain $CA_CERT"
+        echo -e "  ${CYAN}Windows:${NC} Import CA cert via certmgr.msc into Trusted Root Certification Authorities"
     fi
 }
 
@@ -131,13 +172,27 @@ start_lab_environment_core() {
 
     if [ "$BACKEND_TYPE" == "consul" ]; then
         download_latest_consul_binary "$BIN_DIR"
-        configure_and_start_consul
+        if [ "$ENABLE_TLS" = true ]; then
+            configure_consul_with_tls
+            start_consul_with_tls
+        else
+            configure_and_start_consul
+        fi
     fi
 
     if [ "$CLUSTER_MODE" = "multi" ]; then
-        start_vault_nodes
+        if [ "$ENABLE_TLS" = true ]; then
+            start_vault_nodes_with_tls
+        else
+            start_vault_nodes
+        fi
     else
-        configure_and_start_vault
+        if [ "$ENABLE_TLS" = true ]; then
+            configure_vault_with_tls
+            start_vault_with_tls
+        else
+            configure_and_start_vault
+        fi
     fi
 
     initialize_and_unseal_vault
@@ -155,14 +210,31 @@ restart_lab_environment() {
     fi
     stop_lab_environment
     sleep 3
+
     if [ "$BACKEND_TYPE" == "consul" ]; then
-        configure_and_start_consul
+        if [ "$ENABLE_TLS" = true ]; then
+            configure_consul_with_tls
+            start_consul_with_tls
+        else
+            configure_and_start_consul
+        fi
     fi
+
     if [ "$CLUSTER_MODE" = "multi" ]; then
-        start_vault_nodes
+        if [ "$ENABLE_TLS" = true ]; then
+            start_vault_nodes_with_tls
+        else
+            start_vault_nodes
+        fi
     else
-        configure_and_start_vault
+        if [ "$ENABLE_TLS" = true ]; then
+            configure_vault_with_tls
+            start_vault_with_tls
+        else
+            configure_and_start_vault
+        fi
     fi
+
     initialize_and_unseal_vault
     log_info "Vault lab environment restarted and unsealed. 🔄"
     display_final_info
@@ -187,7 +259,8 @@ main() {
             -v|--verbose) VERBOSE_OUTPUT=true; shift ;;
             --no-color) COLORS_ENABLED=false; shift ;;
             --backend) BACKEND_TYPE="$2"; BACKEND_TYPE_SET_VIA_ARG=true; shift 2 ;;
-            --cluster) CLUSTER_MODE="$2"; shift 2 ;;   # --- CLUSTER FIX ---
+            --cluster) CLUSTER_MODE="$2"; shift 2 ;;
+            --tls) ENABLE_TLS=true; TLS_ENABLED_FROM_ARG=true; shift ;;
             start|stop|restart|reset|status|cleanup|shell) command="$1"; shift ;;
             backup) command="backup"; backup_name="$2"; backup_desc="$3"; shift; [ -n "$2" ] && shift; [ -n "$2" ] && shift ;;
             restore) command="restore"; backup_name="$2"; backup_force="$3"; shift 2; [ -n "$2" ] && shift ;;
@@ -200,10 +273,16 @@ main() {
     done
 
     if [[ "$command" == "shell" ]]; then
+        if [ "$ENABLE_TLS" = true ]; then
+            export VAULT_CACERT="$CA_CERT"
+        fi
         export VAULT_ADDR="$VAULT_ADDR"
         [ -f "$VAULT_DIR/root_token.txt" ] && export VAULT_TOKEN="$(cat "$VAULT_DIR/root_token.txt")"
         export PATH="$BIN_DIR:$PATH"
-        echo "🔒 Lab shell active. Type 'exit' to leave."
+        echo "🔓 Lab shell active. Type 'exit' to leave."
+        if [ "$ENABLE_TLS" = true ]; then
+            echo "🔒 TLS is enabled - CA certificate: $VAULT_CACERT"
+        fi
         exec "${SHELL:-bash}" -i
         return 0
     fi
@@ -216,7 +295,7 @@ main() {
         load_backend_type_from_config 2>/dev/null || true
     fi
 
-    # --- CLUSTER FIX ---: chiedi prima cluster mode
+    # Chiedi cluster mode prima se necessario
     if [[ "$command" == "start" || "$command" == "reset" ]]; then
         if [[ ! "$CLUSTER_MODE" =~ ^(single|multi)$ ]]; then
             echo -e "\n${YELLOW}Cluster mode (single/multi) [single]:${NC}"
@@ -229,7 +308,7 @@ main() {
         echo -e "Using cluster mode: ${GREEN}$CLUSTER_MODE${NC}"
     fi
 
-    # backend prompt solo se serve e non forzato
+    # Backend prompt solo se serve e non forzato
     if [ "$BACKEND_TYPE_SET_VIA_ARG" = false ] && [[ "$command" == "start" || "$command" == "reset" ]]; then
         if [ "$CLUSTER_MODE" = "multi" ]; then
             BACKEND_TYPE="consul"
@@ -244,6 +323,25 @@ main() {
                 *) log_warn "Invalid choice. Defaulting to 'file'." ; BACKEND_TYPE="file" ;;
             esac
             echo -e "Using backend: ${GREEN}$BACKEND_TYPE${NC}"
+        fi
+    fi
+
+    # TLS prompt se non specificato via argomento
+    if [[ "$command" == "start" || "$command" == "reset" ]]; then
+        if [ "$TLS_ENABLED_FROM_ARG" = false ]; then
+            echo -e "\n${YELLOW}Enable TLS/SSL encryption? (y/N):${NC}"
+            read -r tls_choice
+            case "${tls_choice:-n}" in
+                y|Y|yes|Yes|YES) ENABLE_TLS=true ;;
+                *) ENABLE_TLS=false ;;
+            esac
+        fi
+        echo -e "TLS encryption: ${GREEN}$([ "$ENABLE_TLS" = true ] && echo "enabled" || echo "disabled")${NC}"
+
+        # Aggiorna gli indirizzi se TLS è abilitato
+        if [ "$ENABLE_TLS" = true ]; then
+            VAULT_ADDR="https://127.0.0.1:8200"
+            CONSUL_ADDR="https://127.0.0.1:8500"
         fi
     fi
 
