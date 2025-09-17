@@ -20,7 +20,7 @@ Quick Start
 
 `git clone https://github.com/your-repo/zero-to-vault-lab.git
 cd zero-to-vault-lab
-./vault-lab-ctl.sh up`
+./vault-lab-ctl.sh start`
 
 That single command fetches everything and brings the lab online.\
 Open **<https://localhost:8200>** to start exploring.
