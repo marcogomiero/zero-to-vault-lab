@@ -355,25 +355,9 @@ configure_vault_features() {
     "$vault_exe" write -f transit/keys/lab-key &>/dev/null || log_warn "Failed to create transit key"
     log_info "   Transit key 'lab-key' ready. Example: vault write transit/encrypt/lab-key plaintext=$(base64 <<< 'hello')"
 
-    # --- Database engine demo with SQLite plugin ---
-    log_info " - Enabling Database secrets engine (SQLite demo)"
-    "$vault_exe" secrets enable database &>/dev/null || log_warn "Failed to enable database engine"
-
-    # Configure a SQLite demo database stored in the Vault data directory
-    local sqlite_db_path="$VAULT_DIR/demo.db"
-    touch "$sqlite_db_path"
-
-    "$vault_exe" write database/config/demo \
-        plugin_name=sqlite-database-plugin \
-        connection_url="file:${sqlite_db_path}?mode=rwc" &>/dev/null || log_warn "Failed to configure database"
-
-    "$vault_exe" write database/roles/demo-role \
-        db_name=demo \
-        creation_statements="CREATE TABLE IF NOT EXISTS users(name TEXT); \
-                             -- Vault will generate user creds automatically" \
-        default_ttl="1h" \
-        max_ttl="24h" &>/dev/null || log_warn "Failed to create database role"
-
-    log_info "   Database engine configured with SQLite demo DB at $sqlite_db_path"
-    log_info "   Try: vault read database/creds/demo-role  (dynamic creds with 1h TTL)"
+    # --- Database secrets engine (mock/demo only) ---
+    log_info " - Enabling Database secrets engine (no backend configured)"
+    "$vault_exe" secrets enable database &>/dev/null \
+    || log_warn "Could not enable database engine"
+    log_info "   Database engine configured"
 }
