@@ -4,6 +4,11 @@
 
 # --- Setup Script Directory ---
 # Ensures that sourcing works correctly regardless of where the script is called from
+
+# VERSION TO DOWNLOAF
+VAULT_VERSION="${VAULT_VERSION:-latest}"
+CONSUL_VERSION="${CONSUL_VERSION:-latest}"
+
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
 # --- Global Configuration ---
