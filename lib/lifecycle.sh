@@ -262,118 +262,108 @@ reset_lab_environment() {
     start_lab_environment_core
 }
 
-main() {
-    apply_color_settings
-    local command="start"
-    local original_args=("$@")
-    local backup_name="" backup_desc="" backup_force="" export_path="" import_path=""
+parse_args() {
+    # reset variabili globali
+    FORCE_CLEANUP_ON_START=false
+    VERBOSE_OUTPUT=false
+    COLORS_ENABLED=true
+    TLS_ENABLED_FROM_ARG=false
+    BACKEND_TYPE_SET_VIA_ARG=false
+    COMMAND=""
+    REMAINING_ARGS=()
 
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            -h|--help) display_help ;;
-            -c|--clean) FORCE_CLEANUP_ON_START=true; shift ;;
-            -v|--verbose) VERBOSE_OUTPUT=true; shift ;;
-            --no-color) COLORS_ENABLED=false; shift ;;
-            --backend) BACKEND_TYPE="$2"; BACKEND_TYPE_SET_VIA_ARG=true; shift 2 ;;
-            --cluster) CLUSTER_MODE="$2"; shift 2 ;;
-            --tls) ENABLE_TLS=true; TLS_ENABLED_FROM_ARG=true; shift ;;
-            start|stop|restart|reset|status|cleanup|shell) command="$1"; shift ;;
-            backup) command="backup"; backup_name="$2"; backup_desc="$3"; shift; [ -n "$2" ] && shift; [ -n "$2" ] && shift ;;
-            restore) command="restore"; backup_name="$2"; backup_force="$3"; shift 2; [ -n "$2" ] && shift ;;
-            list-backups) command="list-backups"; shift ;;
-            delete-backup) command="delete-backup"; backup_name="$2"; backup_force="$3"; shift 2; [ -n "$2" ] && shift ;;
-            export-backup) command="export-backup"; backup_name="$2"; export_path="$3"; shift 2; [ -n "$2" ] && shift ;;
-            import-backup) command="import-backup"; import_path="$2"; backup_name="$3"; shift 2; [ -n "$2" ] && shift ;;
-            *) log ERROR "Invalid argument: $1";;
+    # parse con getopts (gestione di opzioni lunghe con '-:')
+    while getopts ":chv-:" opt; do
+        case $opt in
+            c) FORCE_CLEANUP_ON_START=true ;;
+            h) display_help ;;
+            v) VERBOSE_OUTPUT=true ;;
+            -)
+                case "${OPTARG}" in
+                    no-color) COLORS_ENABLED=false ;;
+                    backend)  BACKEND_TYPE="$2"; BACKEND_TYPE_SET_VIA_ARG=true; shift ;;
+                    cluster)  CLUSTER_MODE="$2"; shift ;;
+                    tls)      ENABLE_TLS=true; TLS_ENABLED_FROM_ARG=true ;;
+                    help)     display_help ;;
+                    *) log ERROR "Unknown option --${OPTARG}" ;;
+                esac
+                ;;
+            \?) log ERROR "Unknown option -$OPTARG" ;;
         esac
     done
+    shift $((OPTIND-1))
 
-    if [[ "$command" == "shell" ]]; then
-        if [ "$ENABLE_TLS" = true ]; then
-            export VAULT_CACERT="$CA_CERT"
-        fi
-        export VAULT_ADDR="$VAULT_ADDR"
-        [ -f "$VAULT_DIR/root_token.txt" ] && export VAULT_TOKEN="$(cat "$VAULT_DIR/root_token.txt")"
-        export PATH="$BIN_DIR:$PATH"
-        echo "🔓 Lab shell active. Type 'exit' to leave."
-        if [ "$ENABLE_TLS" = true ]; then
-            echo "🔒 TLS is enabled - CA certificate: $VAULT_CACERT"
-        fi
-        exec "${SHELL:-bash}" -i
-        return 0
-    fi
+    # primo argomento dopo le opzioni è il comando
+    COMMAND="${1:-start}"
+    shift || true
+    REMAINING_ARGS=("$@")
+}
 
-    if [[ "$command" != "start" && "$command" != "reset" && "$command" != "backup" && "$command" != "list-backups" && "$command" != "delete-backup" && "$command" != "export-backup" && "$command" != "import-backup" ]]; then
-        load_backend_type_from_config
-    fi
+main() {
+    apply_color_settings
+    parse_args "$@"
 
-    if [[ "$command" == "backup" || "$command" == "restore" ]]; then
-        load_backend_type_from_config 2>/dev/null || true
-    fi
+    # carica backend da file se serve
+    case "$COMMAND" in
+        start|reset|backup|list-backups|delete-backup|export-backup|import-backup) ;;
+        *) load_backend_type_from_config ;;
+    esac
 
-    # Chiedi cluster mode prima se necessario
-    if [[ "$command" == "start" || "$command" == "reset" ]]; then
+    # prompt interattivi (cluster/backend/tls) solo per start/reset
+    if [[ "$COMMAND" =~ ^(start|reset)$ ]]; then
         if [[ ! "$CLUSTER_MODE" =~ ^(single|multi)$ ]]; then
             echo -e "\n${YELLOW}Cluster mode (single/multi) [single]:${NC}"
             read -r cchoice
-            case "${cchoice:-single}" in
-                multi|Multi|MULTI) CLUSTER_MODE="multi" ;;
-                *) CLUSTER_MODE="single" ;;
-            esac
+            CLUSTER_MODE=${cchoice:-single}
         fi
         echo -e "Using cluster mode: ${GREEN}$CLUSTER_MODE${NC}"
-    fi
 
-    # Backend prompt solo se serve e non forzato
-    if [ "$BACKEND_TYPE_SET_VIA_ARG" = false ] && [[ "$command" == "start" || "$command" == "reset" ]]; then
-        if [ "$CLUSTER_MODE" = "multi" ]; then
-            BACKEND_TYPE="consul"
-            echo -e "Cluster mode is multi: forcing backend to ${GREEN}consul${NC}"
-        else
-            echo -e "\n${YELLOW}Please choose a storage backend for Vault (file or consul, default: file):${NC}"
-            read -p "> " choice
-            choice=${choice:-file}
-            case "$choice" in
-                file|File|FILE) BACKEND_TYPE="file" ;;
-                consul|Consul|CONSUL) BACKEND_TYPE="consul" ;;
-                *) log WARN "Invalid choice. Defaulting to 'file'." ; BACKEND_TYPE="file" ;;
-            esac
-            echo -e "Using backend: ${GREEN}$BACKEND_TYPE${NC}"
+        if [ "$BACKEND_TYPE_SET_VIA_ARG" = false ]; then
+            if [ "$CLUSTER_MODE" = "multi" ]; then
+                BACKEND_TYPE="consul"
+                echo -e "Cluster mode is multi: forcing backend to ${GREEN}consul${NC}"
+            else
+                echo -e "\n${YELLOW}Choose storage backend (file/consul) [file]:${NC}"
+                read -r choice
+                BACKEND_TYPE=${choice:-file}
+            fi
         fi
-    fi
+        echo -e "Using backend: ${GREEN}$BACKEND_TYPE${NC}"
 
-    # TLS prompt se non specificato via argomento
-    if [[ "$command" == "start" || "$command" == "reset" ]]; then
         if [ "$TLS_ENABLED_FROM_ARG" = false ]; then
             echo -e "\n${YELLOW}Enable TLS/SSL encryption? (y/N):${NC}"
             read -r tls_choice
-            case "${tls_choice:-n}" in
-                y|Y|yes|Yes|YES) ENABLE_TLS=true ;;
-                *) ENABLE_TLS=false ;;
-            esac
+            [[ "$tls_choice" =~ ^[Yy] ]] && ENABLE_TLS=true
         fi
-        echo -e "TLS encryption: ${GREEN}$([ "$ENABLE_TLS" = true ] && echo "enabled" || echo "disabled")${NC}"
+        echo -e "TLS encryption: ${GREEN}$([ "$ENABLE_TLS" = true ] && echo enabled || echo disabled)${NC}"
 
-        # Aggiorna gli indirizzi se TLS è abilitato
-        if [ "$ENABLE_TLS" = true ]; then
+        [ "$ENABLE_TLS" = true ] && {
             VAULT_ADDR="https://127.0.0.1:8200"
             CONSUL_ADDR="https://127.0.0.1:8500"
-        fi
+        }
     fi
 
-    case "$command" in
-        start)   [ "$FORCE_CLEANUP_ON_START" = true ] && cleanup_previous_environment; start_lab_environment_core ;;
+    # esecuzione comando
+    case "$COMMAND" in
+        start)   $FORCE_CLEANUP_ON_START && cleanup_previous_environment; start_lab_environment_core ;;
         stop)    stop_lab_environment ;;
         restart) restart_lab_environment ;;
         reset)   reset_lab_environment ;;
         status)  check_lab_status ;;
         cleanup) cleanup_previous_environment ;;
-        backup)  create_backup "$backup_name" "$backup_desc" ;;
-        restore) restore_backup "$backup_name" "$backup_force" ;;
-        list-backups) list_backups ;;
-        delete-backup) delete_backup "$backup_name" "$backup_force" ;;
-        export-backup) export_backup "$backup_name" "$export_path" ;;
-        import-backup) import_backup "$import_path" "$backup_name" ;;
-        *) log ERROR "Invalid command '$command'." ;;
+        shell)
+            [ "$ENABLE_TLS" = true ] && export VAULT_CACERT="$CA_CERT"
+            export VAULT_ADDR PATH="$BIN_DIR:$PATH"
+            [ -f "$VAULT_DIR/root_token.txt" ] && export VAULT_TOKEN="$(cat "$VAULT_DIR/root_token.txt")"
+            echo "🔓 Lab shell active. Type 'exit' to leave."
+            exec "${SHELL:-bash}" -i
+            ;;
+        backup)         create_backup "${REMAINING_ARGS[0]}" "${REMAINING_ARGS[1]}" ;;
+        restore)        restore_backup "${REMAINING_ARGS[0]}" "${REMAINING_ARGS[1]}" ;;
+        list-backups)   list_backups ;;
+        delete-backup)  delete_backup "${REMAINING_ARGS[0]}" "${REMAINING_ARGS[1]}" ;;
+        export-backup)  export_backup "${REMAINING_ARGS[0]}" "${REMAINING_ARGS[1]}" ;;
+        import-backup)  import_backup "${REMAINING_ARGS[0]}" "${REMAINING_ARGS[1]}" ;;
+        *) log ERROR "Invalid command '$COMMAND'." ;;
     esac
 }
