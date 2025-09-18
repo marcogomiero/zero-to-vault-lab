@@ -33,25 +33,35 @@ get_exe() {
     fi
 }
 
-log_debug() {
-    [ "$VERBOSE_OUTPUT" = true ] && echo -e "${GREEN}[DEBUG]${NC} $*"
+log() {
+    local level=$1; shift
+    local color=""
+    case "$level" in
+        DEBUG) [ "$VERBOSE_OUTPUT" = true ] || return 0; color=$GREEN ;;
+        INFO)  color=$GREEN ;;
+        WARN)  color=$YELLOW ;;
+        ERROR) color=$RED ;;
+    esac
+    echo -e "${color}[${level}]${NC} $*" >&2
+    [ "$level" = "ERROR" ] && exit 1
 }
 
-log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
+log_debug() { log DEBUG "$@"; }
+log_info()  { log INFO  "$@"; }
+log_warn()  { log WARN  "$@"; }
+log_error() { log ERROR "$@"; }
 
 # --- Error-handling helpers ---
 safe_run() {
   local msg="$1"; shift
-  if ! "$@"; then log_error "$msg (cmd: $*)"
+  if ! "$@"; then log ERROR "$msg (cmd: $*)"
   fi
 }
 
 warn_run() {
   local msg="$1"; shift
   if ! "$@"; then
-    log_warn "$msg (cmd: $*)"
+    log WARN "$msg (cmd: $*)"
     return 1
   fi
 }
@@ -62,23 +72,23 @@ validate_ports_available() {
     local consul_port=8500
 
     if lsof -Pi :$vault_port -sTCP:LISTEN -t >/dev/null ; then
-        log_error "La porta $vault_port è già in uso. Chiudi il processo o usa una porta diversa."
+        log ERROR "La porta $vault_port è già in uso. Chiudi il processo o usa una porta diversa."
     fi
 
     if [ "$BACKEND_TYPE" == "consul" ] && lsof -Pi :$consul_port -sTCP:LISTEN -t >/dev/null ; then
-        log_error "La porta $consul_port è già in uso. Chiudi il processo o usa una porta diversa."
+        log ERROR "La porta $consul_port è già in uso. Chiudi il processo o usa una porta diversa."
     fi
-    log_info "Port validation successful. ✅"
+    log INFO "Port validation successful. ✅"
 }
 
 validate_directories() {
-    if [ ! -w "$BASE_DIR" ]; then
-        log_error "La directory base $BASE_DIR non è scrivibile. Controlla i permessi."
+    if [ ! -w "$SCRIPT_DIR" ]; then
+        log ERROR "La directory base $SCRIPT_DIR non è scrivibile. Controlla i permessi."
     fi
     if [ ! -w "$(dirname "$BIN_DIR")" ]; then
-        log_error "La directory padre di $BIN_DIR non è scrivibile. Controlla i permessi."
+        log ERROR "La directory padre di $BIN_DIR non è scrivibile. Controlla i permessi."
     fi
-    log_info "Directory validation successful. ✅"
+    log INFO "Directory validation successful. ✅"
 }
 
 # --- Generic service stopper ---
@@ -88,23 +98,23 @@ stop_service() {
     local process_pattern="$3"
     local port="$4"
 
-    log_info "Attempting to stop ${name} server..."
+    log INFO "Attempting to stop ${name} server..."
     pids=$(pgrep -f "$process_pattern" || true)
     if [ -n "$pids" ]; then
-        log_info "Trovati processi ${name} esistenti: $pids. Terminazione..."
+        log INFO "Trovati processi ${name} esistenti: $pids. Terminazione..."
         kill -TERM $pids 2>/dev/null || true; sleep 2; kill -9 $pids 2>/dev/null || true
     fi
 
     if [ -f "$pid_file" ]; then
         local pid=$(cat "$pid_file")
         if ps -p "$pid" >/dev/null; then
-            log_info "Stopping ${name} process with PID $pid..."
+            log INFO "Stopping ${name} process with PID $pid..."
             kill "$pid" >/dev/null 2>&1; sleep 5
             if ps -p "$pid" >/dev/null; then
-                log_warn "Forcing kill for ${name} (PID: $pid)..."
+                log WARN "Forcing kill for ${name} (PID: $pid)..."
                 kill -9 "$pid" >/dev/null 2>&1
             fi
-            log_info "${name} process stopped. ✅"
+            log INFO "${name} process stopped. ✅"
         fi
         rm -f "$pid_file"
     fi
@@ -112,7 +122,7 @@ stop_service() {
     if [ -n "$port" ]; then
         lingering_pid=$(lsof -ti:"$port" 2>/dev/null || true)
         if [ -n "$lingering_pid" ]; then
-            log_warn "Processi residui sulla porta $port: $lingering_pid. Terminazione..."
+            log WARN "Processi residui sulla porta $port: $lingering_pid. Terminazione..."
             kill -9 "$lingering_pid" 2>/dev/null || true
         fi
     fi
@@ -130,4 +140,19 @@ get_host_accessible_ip() {
         fi
     fi
     echo "$ip"
+}
+
+wait_for_http_up() {
+    local url=$1 timeout=${2:-30} name=${3:-Service}
+    local elapsed=0
+    log_info "Waiting for $name on $url (timeout ${timeout}s)…"
+    while (( elapsed < timeout )); do
+        if curl -sk -o /dev/null -w "%{http_code}" "$url" | grep -q "200"; then
+            log_info "$name reachable after ${elapsed}s"
+            return 0
+        fi
+        sleep 1
+        ((elapsed++))
+    done
+    log_error "$name not reachable on $url after $timeout seconds."
 }

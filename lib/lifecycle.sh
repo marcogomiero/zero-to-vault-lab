@@ -46,9 +46,9 @@ save_backend_type_to_config() {
 load_backend_type_from_config() {
     if [ -f "$LAB_CONFIG_FILE" ]; then
         source "$LAB_CONFIG_FILE"
-        log_info "Loaded backend type from config: $BACKEND_TYPE"
-        [ -n "$CLUSTER_MODE" ] && log_info "Loaded cluster mode from config: $CLUSTER_MODE"
-        [ -n "$ENABLE_TLS" ] && log_info "Loaded TLS mode from config: $ENABLE_TLS"
+        log INFO "Loaded backend type from config: $BACKEND_TYPE"
+        [ -n "$CLUSTER_MODE" ] && log INFO "Loaded cluster mode from config: $CLUSTER_MODE"
+        [ -n "$ENABLE_TLS" ] && log INFO "Loaded TLS mode from config: $ENABLE_TLS"
 
         # Aggiorna VAULT_ADDR e CONSUL_ADDR se TLS è abilitato
         if [ "$ENABLE_TLS" = true ]; then
@@ -59,33 +59,33 @@ load_backend_type_from_config() {
 }
 
 stop_lab_environment() {
-    log_info "STOPPING VAULT LAB ENVIRONMENT (Backend: $BACKEND_TYPE)"
+    log INFO "STOPPING VAULT LAB ENVIRONMENT (Backend: $BACKEND_TYPE)"
     stop_vault
     if [ "$BACKEND_TYPE" == "consul" ]; then
         stop_consul
     fi
-    log_info "Vault lab environment stopped. 👋"
+    log INFO "Vault lab environment stopped. 👋"
 }
 
 cleanup_previous_environment() {
-    log_info "FULL CLEANUP OF PREVIOUS LAB ENVIRONMENT"
+    log INFO "FULL CLEANUP OF PREVIOUS LAB ENVIRONMENT"
     stop_lab_environment
     rm -f "$LAB_CONFIG_FILE"
-    log_info "Deleting previous working directories..."
+    log INFO "Deleting previous working directories..."
     rm -rf "$VAULT_DIR" "$CONSUL_DIR"
     mkdir -p "$VAULT_DIR" "$CONSUL_DIR"
-    log_info "Cleanup completed. ✅"
+    log INFO "Cleanup completed. ✅"
 }
 
 check_lab_status() {
-    log_info "CHECKING VAULT LAB STATUS (Backend: $BACKEND_TYPE)"
+    log INFO "CHECKING VAULT LAB STATUS (Backend: $BACKEND_TYPE)"
     local vault_running=false
     if [ -f "$LAB_VAULT_PID_FILE" ] && ps -p "$(cat "$LAB_VAULT_PID_FILE")" > /dev/null; then
         vault_running=true
     fi
 
     if [ "$vault_running" = true ]; then
-        log_info "Vault process is RUNNING. PID: $(cat "$LAB_VAULT_PID_FILE")"
+        log INFO "Vault process is RUNNING. PID: $(cat "$LAB_VAULT_PID_FILE")"
 
         # Imposta le variabili necessarie per il controllo dello stato
         if [ "$ENABLE_TLS" = true ]; then
@@ -95,31 +95,31 @@ check_lab_status() {
 
         local status_json=$(get_vault_status)
         if [ "$(echo "$status_json" | jq -r '.sealed')" == "false" ]; then
-            log_info "Vault is UNSEALED and READY. 🎉"
+            log INFO "Vault is UNSEALED and READY. 🎉"
         else
-            log_warn "Vault is SEALED. 🔒 Run 'restart' to unseal."
+            log WARN "Vault is SEALED. 🔒 Run 'restart' to unseal."
         fi
     else
-        log_info "Vault server is NOT RUNNING. 🛑"
+        log INFO "Vault server is NOT RUNNING. 🛑"
     fi
 
     if [ "$BACKEND_TYPE" == "consul" ]; then
         if [ -f "$LAB_CONSUL_PID_FILE" ] && ps -p "$(cat "$LAB_CONSUL_PID_FILE")" > /dev/null; then
-            log_info "Consul process is RUNNING. PID: $(cat "$LAB_CONSUL_PID_FILE")"
+            log INFO "Consul process is RUNNING. PID: $(cat "$LAB_CONSUL_PID_FILE")"
         else
-            log_info "Consul server is NOT RUNNING. 🛑"
+            log INFO "Consul server is NOT RUNNING. 🛑"
         fi
     fi
 
     if [ "$ENABLE_TLS" = true ]; then
-        log_info "TLS encryption is ENABLED. 🔒"
+        log INFO "TLS encryption is ENABLED. 🔒"
     else
-        log_info "TLS encryption is DISABLED. 🔓"
+        log INFO "TLS encryption is DISABLED. 🔓"
     fi
 }
 
 display_final_info() {
-    log_info "LAB VAULT IS READY TO USE!"
+    log INFO "LAB VAULT IS READY TO USE!"
     local vault_root_token=$(cat "$VAULT_DIR/root_token.txt" 2>/dev/null)
     local approle_role_id=$(cat "$VAULT_DIR/approle_role_id.txt" 2>/dev/null)
     local approle_secret_id=$(cat "$VAULT_DIR/approle_secret_id.txt" 2>/dev/null)
@@ -178,7 +178,7 @@ display_final_info() {
 }
 
 start_lab_environment_core() {
-    log_info "Validating environment..."
+    log INFO "Validating environment..."
     validate_directories
     validate_ports_available
     mkdir -p "$BIN_DIR"
@@ -218,7 +218,7 @@ start_lab_environment_core() {
 }
 
 restart_lab_environment() {
-    log_info "RESTARTING VAULT LAB ENVIRONMENT (Backend: $BACKEND_TYPE)"
+    log INFO "RESTARTING VAULT LAB ENVIRONMENT (Backend: $BACKEND_TYPE)"
     mkdir -p "$BIN_DIR"
     download_latest_vault_binary "$BIN_DIR"
     if [ "$BACKEND_TYPE" == "consul" ]; then
@@ -252,12 +252,12 @@ restart_lab_environment() {
     fi
 
     initialize_and_unseal_vault
-    log_info "Vault lab environment restarted and unsealed. 🔄"
+    log INFO "Vault lab environment restarted and unsealed. 🔄"
     display_final_info
 }
 
 reset_lab_environment() {
-    log_info "RESETTING VAULT LAB ENVIRONMENT"
+    log INFO "RESETTING VAULT LAB ENVIRONMENT"
     cleanup_previous_environment
     start_lab_environment_core
 }
@@ -284,7 +284,7 @@ main() {
             delete-backup) command="delete-backup"; backup_name="$2"; backup_force="$3"; shift 2; [ -n "$2" ] && shift ;;
             export-backup) command="export-backup"; backup_name="$2"; export_path="$3"; shift 2; [ -n "$2" ] && shift ;;
             import-backup) command="import-backup"; import_path="$2"; backup_name="$3"; shift 2; [ -n "$2" ] && shift ;;
-            *) log_error "Invalid argument: $1";;
+            *) log ERROR "Invalid argument: $1";;
         esac
     done
 
@@ -336,7 +336,7 @@ main() {
             case "$choice" in
                 file|File|FILE) BACKEND_TYPE="file" ;;
                 consul|Consul|CONSUL) BACKEND_TYPE="consul" ;;
-                *) log_warn "Invalid choice. Defaulting to 'file'." ; BACKEND_TYPE="file" ;;
+                *) log WARN "Invalid choice. Defaulting to 'file'." ; BACKEND_TYPE="file" ;;
             esac
             echo -e "Using backend: ${GREEN}$BACKEND_TYPE${NC}"
         fi
@@ -374,6 +374,6 @@ main() {
         delete-backup) delete_backup "$backup_name" "$backup_force" ;;
         export-backup) export_backup "$backup_name" "$export_path" ;;
         import-backup) import_backup "$import_path" "$backup_name" ;;
-        *) log_error "Invalid command '$command'." ;;
+        *) log ERROR "Invalid command '$command'." ;;
     esac
 }
