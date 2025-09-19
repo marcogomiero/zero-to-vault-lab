@@ -1,7 +1,7 @@
 #!/bin/bash
 
 
-# Consenti override da ambiente, default “latest”
+# Consenti override da ambiente, default latest
 VAULT_VERSION="${VAULT_VERSION:-latest}"
 CONSUL_VERSION="${CONSUL_VERSION:-latest}"
 
@@ -39,11 +39,11 @@ BACKUP_DIR="$SCRIPT_DIR/backups"
 BACKUP_METADATA_FILE="backup_metadata.json"
 
 # --- Global Configuration ---
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-YELLOW='\033[0;33m'
-RED='\033[0;31m'
-NC='\033[0m'
+GREEN=''
+CYAN=''
+YELLOW=''
+RED=''
+NC=''
 COLORS_ENABLED=true
 
 # --- Helpers OS/Binary & Logging ---
@@ -108,23 +108,23 @@ validate_ports_available() {
     local consul_port=8500
 
     if lsof -Pi :$vault_port -sTCP:LISTEN -t >/dev/null ; then
-        log ERROR "La porta $vault_port è già in uso. Chiudi il processo o usa una porta diversa."
+        log ERROR "La porta $vault_port  gi in uso. Chiudi il processo o usa una porta diversa."
     fi
 
     if [ "$BACKEND_TYPE" == "consul" ] && lsof -Pi :$consul_port -sTCP:LISTEN -t >/dev/null ; then
-        log ERROR "La porta $consul_port è già in uso. Chiudi il processo o usa una porta diversa."
+        log ERROR "La porta $consul_port  gi in uso. Chiudi il processo o usa una porta diversa."
     fi
-    log INFO "Port validation successful. ✅"
+    log INFO "Port validation successful. "
 }
 
 validate_directories() {
     if [ ! -w "$SCRIPT_DIR" ]; then
-        log ERROR "La directory base $SCRIPT_DIR non è scrivibile. Controlla i permessi."
+        log ERROR "La directory base $SCRIPT_DIR non  scrivibile. Controlla i permessi."
     fi
     if [ ! -w "$(dirname "$BIN_DIR")" ]; then
-        log ERROR "La directory padre di $BIN_DIR non è scrivibile. Controlla i permessi."
+        log ERROR "La directory padre di $BIN_DIR non  scrivibile. Controlla i permessi."
     fi
-    log INFO "Directory validation successful. ✅"
+    log INFO "Directory validation successful. "
 }
 
 # --- Generic service stopper ---
@@ -150,7 +150,7 @@ stop_service() {
                 log WARN "Forcing kill for ${name} (PID: $pid)..."
                 kill -9 "$pid" >/dev/null 2>&1
             fi
-            log INFO "${name} process stopped. ✅"
+            log INFO "${name} process stopped. "
         fi
         rm -f "$pid_file"
     fi
@@ -181,7 +181,7 @@ get_host_accessible_ip() {
 wait_for_http_up() {
     local url=$1 timeout=${2:-30} name=${3:-Service}
     local elapsed=0
-    log_info "Waiting for $name on $url (timeout ${timeout}s)…"
+    log_info "Waiting for $name on $url (timeout ${timeout}s)"
     while (( elapsed < timeout )); do
         if curl -sk -o /dev/null -w "%{http_code}" "$url" | grep -q "200"; then
             log_info "$name reachable after ${elapsed}s"
@@ -206,7 +206,7 @@ check_and_install_prerequisites() {
     done
 
     if [ ${#missing_pkgs[@]} -eq 0 ]; then
-        log INFO "All necessary prerequisites are already installed. 👍"
+        log INFO "All necessary prerequisites are already installed. "
         return 0
     fi
 
@@ -261,7 +261,7 @@ _download_hashicorp_binary() {
 
     log INFO "${product^^} binary management: check and download"
 
-    # Se non specificato, determina la versione più recente
+    # Se non specificato, determina la versione pi recente
     local target_version="$requested_version"
     if [ "$requested_version" = "latest" ]; then
         local releases_json
@@ -279,7 +279,7 @@ _download_hashicorp_binary() {
         log INFO "Requested ${product} version: $target_version"
     fi
 
-    # Se il binario esiste già ed è alla versione giusta, esci
+    # Se il binario esiste gi ed  alla versione giusta, esci
     if [ -x "$product_exe" ]; then
         local current_version
         current_version=$("$product_exe" --version | head -n1 | awk '{print $2}' | sed 's/^v//')
@@ -796,7 +796,7 @@ configure_vault_features() {
 # --- TLS Management Functions ---
 
 check_tls_prerequisites() {
-    # Usa OpenSSL che è universalmente disponibile
+    # Usa OpenSSL che  universalmente disponibile
     if ! command -v openssl &> /dev/null; then
         log ERROR "OpenSSL is required but not found. Please install OpenSSL."
     fi
@@ -983,7 +983,7 @@ verify_certificate() {
 
     log INFO "Verifying certificate for $service_name..."
 
-    # Verifica validità del certificato
+    # Verifica validit del certificato
     if ! openssl x509 -in "$cert_file" -text -noout >/dev/null 2>&1; then
         log ERROR "Invalid certificate format: $cert_file"
         return 1
@@ -1193,7 +1193,7 @@ create_backup() {
     log INFO "CREATING BACKUP: $backup_name"
     log INFO "Description: ${backup_description:-"No description provided"}"
 
-    # Controlla se il lab è attivo
+    # Controlla se il lab  attivo
     local lab_running=false
     if [ -f "$LAB_VAULT_PID_FILE" ] && ps -p "$(cat "$LAB_VAULT_PID_FILE")" > /dev/null 2>&1; then
         lab_running=true
@@ -1210,12 +1210,12 @@ create_backup() {
         log INFO "Backing up Vault data..."
         cp -r "$VAULT_DIR" "$backup_path/vault-data" || log ERROR "Failed to backup Vault data"
 
-        # Se il lab è in esecuzione, esporta anche i dati via API
+        # Se il lab  in esecuzione, esporta anche i dati via API
         if [ "$lab_running" = true ] && [ -f "$VAULT_DIR/root_token.txt" ]; then
             log INFO "Exporting Vault configuration via API..."
             export VAULT_ADDR="$VAULT_ADDR"
 
-            # Imposta VAULT_CACERT se TLS è abilitato
+            # Imposta VAULT_CACERT se TLS  abilitato
             if [ "$ENABLE_TLS" = true ] && [ -f "$CA_CERT" ]; then
                 export VAULT_CACERT="$CA_CERT"
             fi
@@ -1243,12 +1243,12 @@ create_backup() {
         log INFO "Backing up Consul data..."
         cp -r "$CONSUL_DIR" "$backup_path/consul-data" || log ERROR "Failed to backup Consul data"
 
-        # Se Consul è in esecuzione, esporta anche il KV store
+        # Se Consul  in esecuzione, esporta anche il KV store
         if [ "$lab_running" = true ] && [ -f "$CONSUL_DIR/acl_master_token.txt" ]; then
             log INFO "Exporting Consul KV store..."
             export CONSUL_HTTP_TOKEN=$(cat "$CONSUL_DIR/acl_master_token.txt")
 
-            # Imposta CONSUL_CACERT se TLS è abilitato
+            # Imposta CONSUL_CACERT se TLS  abilitato
             if [ "$ENABLE_TLS" = true ] && [ -f "$CA_CERT" ]; then
                 export CONSUL_CACERT="$CA_CERT"
             fi
@@ -1292,7 +1292,7 @@ create_backup() {
         echo "$metadata" > "$backup_path/$BACKUP_METADATA_FILE"
     }
 
-    # Calcola checksum per verifica integrità
+    # Calcola checksum per verifica integrit
     log INFO "Calculating backup integrity checksum..."
     find "$backup_path" -type f -exec sha256sum {} \; | sort > "$backup_path/checksums.sha256"
 
@@ -1320,7 +1320,7 @@ restore_backup() {
         log ERROR "Backup metadata not found. This might be a corrupted backup."
     fi
 
-    # Verifica integrità del backup
+    # Verifica integrit del backup
     log INFO "VERIFYING BACKUP INTEGRITY"
     if [ -f "$backup_path/checksums.sha256" ]; then
         if ! (cd "$backup_path" && sha256sum -c checksums.sha256 --quiet); then
@@ -1356,7 +1356,7 @@ restore_backup() {
         fi
     fi
 
-    # Ferma il lab se è in esecuzione
+    # Ferma il lab se  in esecuzione
     log INFO "Stopping current lab environment..."
     stop_lab_environment 2>/dev/null || true
 
@@ -1557,7 +1557,7 @@ load_backend_type_from_config() {
         [ -n "$CLUSTER_MODE" ] && log INFO "Loaded cluster mode from config: $CLUSTER_MODE"
         [ -n "$ENABLE_TLS" ] && log INFO "Loaded TLS mode from config: $ENABLE_TLS"
 
-        # Aggiorna VAULT_ADDR e CONSUL_ADDR se TLS è abilitato
+        # Aggiorna VAULT_ADDR e CONSUL_ADDR se TLS  abilitato
         if [ "$ENABLE_TLS" = true ]; then
             VAULT_ADDR="https://127.0.0.1:8200"
             CONSUL_ADDR="https://127.0.0.1:8500"
@@ -1571,7 +1571,7 @@ stop_lab_environment() {
     if [ "$BACKEND_TYPE" == "consul" ]; then
         stop_consul
     fi
-    log INFO "Vault lab environment stopped. 👋"
+    log INFO "Vault lab environment stopped. "
 }
 
 cleanup_previous_environment() {
@@ -1581,7 +1581,7 @@ cleanup_previous_environment() {
     log INFO "Deleting previous working directories..."
     rm -rf "$VAULT_DIR" "$CONSUL_DIR"
     mkdir -p "$VAULT_DIR" "$CONSUL_DIR"
-    log INFO "Cleanup completed. ✅"
+    log INFO "Cleanup completed. "
 }
 
 check_lab_status() {
@@ -1602,26 +1602,26 @@ check_lab_status() {
 
         local status_json=$(get_vault_status)
         if [ "$(echo "$status_json" | jq -r '.sealed')" == "false" ]; then
-            log INFO "Vault is UNSEALED and READY. 🎉"
+            log INFO "Vault is UNSEALED and READY. "
         else
-            log WARN "Vault is SEALED. 🔒 Run 'restart' to unseal."
+            log WARN "Vault is SEALED.  Run 'restart' to unseal."
         fi
     else
-        log INFO "Vault server is NOT RUNNING. 🛑"
+        log INFO "Vault server is NOT RUNNING. "
     fi
 
     if [ "$BACKEND_TYPE" == "consul" ]; then
         if [ -f "$LAB_CONSUL_PID_FILE" ] && ps -p "$(cat "$LAB_CONSUL_PID_FILE")" > /dev/null; then
             log INFO "Consul process is RUNNING. PID: $(cat "$LAB_CONSUL_PID_FILE")"
         else
-            log INFO "Consul server is NOT RUNNING. 🛑"
+            log INFO "Consul server is NOT RUNNING. "
         fi
     fi
 
     if [ "$ENABLE_TLS" = true ]; then
-        log INFO "TLS encryption is ENABLED. 🔒"
+        log INFO "TLS encryption is ENABLED. "
     else
-        log INFO "TLS encryption is DISABLED. 🔓"
+        log INFO "TLS encryption is DISABLED. "
     fi
 }
 
@@ -1636,7 +1636,7 @@ display_final_info() {
     local vault_ip="127.0.0.1"  # Vault sempre su localhost
     local consul_ip="127.0.0.1" # Default per Consul
 
-    # Su WSL, usa l'IP della VM per Consul per accessibilità esterna
+    # Su WSL, usa l'IP della VM per Consul per accessibilit esterna
     if grep -q "microsoft" /proc/version &>/dev/null; then
         local wsl_ip=$(ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
         if [ -n "$wsl_ip" ]; then
@@ -1648,17 +1648,17 @@ display_final_info() {
     local tls_note=""
     if [ "$ENABLE_TLS" = true ]; then
         protocol="https"
-        tls_note=" (🔒 TLS enabled)"
+        tls_note=" ( TLS enabled)"
     fi
 
     echo -e "\n${YELLOW}--- ACCESS DETAILS ---${NC}"
-    echo -e "  🔗 Vault UI: ${GREEN}${protocol}://${vault_ip}:8200${NC}${tls_note}"
-    echo -e "  🔑 Vault Root Token: ${GREEN}$vault_root_token${NC}"
+    echo -e "   Vault UI: ${GREEN}${protocol}://${vault_ip}:8200${NC}${tls_note}"
+    echo -e "   Vault Root Token: ${GREEN}$vault_root_token${NC}"
 
     if [ "$BACKEND_TYPE" == "consul" ]; then
         echo -e "  ---"
-        echo -e "  🔗 Consul UI: ${GREEN}${protocol}://${consul_ip}:8500${NC}${tls_note}"
-        echo -e "  🔑 Consul ACL Token: ${GREEN}$consul_token${NC}"
+        echo -e "   Consul UI: ${GREEN}${protocol}://${consul_ip}:8500${NC}${tls_note}"
+        echo -e "   Consul ACL Token: ${GREEN}$consul_token${NC}"
     fi
 
     if [ "$CLUSTER_MODE" = "multi" ]; then
@@ -1670,8 +1670,8 @@ display_final_info() {
 
     if [ "$ENABLE_TLS" = true ]; then
         echo -e "\n${YELLOW}--- TLS CERTIFICATE INFO ---${NC}"
-        echo -e "  📜 CA Certificate: ${GREEN}$CA_CERT${NC}"
-        echo -e "  📁 Certificates Directory: ${GREEN}$CERTS_DIR${NC}"
+        echo -e "   CA Certificate: ${GREEN}$CA_CERT${NC}"
+        echo -e "   Certificates Directory: ${GREEN}$CERTS_DIR${NC}"
         echo -e "\n  To trust the CA certificate:"
         echo -e "  ${CYAN}Linux:${NC} sudo cp $CA_CERT /usr/local/share/ca-certificates/vault-lab-ca.crt && sudo update-ca-certificates"
         echo -e "  ${CYAN}macOS:${NC} sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain $CA_CERT"
@@ -1759,7 +1759,7 @@ restart_lab_environment() {
     fi
 
     initialize_and_unseal_vault
-    log INFO "Vault lab environment restarted and unsealed. 🔄"
+    log INFO "Vault lab environment restarted and unsealed. "
     display_final_info
 }
 
@@ -1800,7 +1800,7 @@ parse_args() {
     done
     shift $((OPTIND-1))
 
-    # primo argomento dopo le opzioni è il comando
+    # primo argomento dopo le opzioni  il comando
     COMMAND="${1:-start}"
     shift || true
     REMAINING_ARGS=("$@")
@@ -1862,7 +1862,7 @@ main() {
             [ "$ENABLE_TLS" = true ] && export VAULT_CACERT="$CA_CERT"
             export VAULT_ADDR PATH="$BIN_DIR:$PATH"
             [ -f "$VAULT_DIR/root_token.txt" ] && export VAULT_TOKEN="$(cat "$VAULT_DIR/root_token.txt")"
-            echo "🔓 Lab shell active. Type 'exit' to leave."
+            echo " Lab shell active. Type 'exit' to leave."
             exec "${SHELL:-bash}" -i
             ;;
         backup)         create_backup "${REMAINING_ARGS[0]}" "${REMAINING_ARGS[1]}" ;;
