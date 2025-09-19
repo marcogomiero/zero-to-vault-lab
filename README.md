@@ -24,14 +24,13 @@ Run **one command** and watch the script pull the latest binaries, wire up TLS, 
 ⚡ Quick Start
 -------------
 
-git clone <https://github.com/your-repo/zero-to-vault-lab.git>\
-cd zero-to-vault-lab\
-./vault-lab-ctl.sh --tls start # full setup with TLS
+git clone https://github.com/your-repo/zero-to-vault-lab.git
+cd zero-to-vault-lab
 
-defaults: single-node, file backend, no TLS
-===========================================
+# Default setup: single node, file backend, no TLS
+./vault-lab-ctl.sh start
 
-That's it. The script fetches everything, configures Vault and Consul, and prints all credentials you need.
+... or ...
 
 🔒 TLS-First Security
 ---------------------
