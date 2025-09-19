@@ -38,21 +38,6 @@ CA_CSR="$CA_DIR/ca-csr.json"
 BACKUP_DIR="$SCRIPT_DIR/backups"
 BACKUP_METADATA_FILE="backup_metadata.json"
 
-# --- Global Configuration ---
-GREEN=''
-CYAN=''
-YELLOW=''
-RED=''
-NC=''
-COLORS_ENABLED=true
-
-# --- Helpers OS/Binary & Logging ---
-apply_color_settings() {
-    if [ ! -t 1 ] || [ "$COLORS_ENABLED" != true ]; then
-        GREEN=""; YELLOW=""; RED=""; NC=""
-    fi
-}
-
 is_windows() {
     case "$(uname -s)" in
       *MINGW*|*MSYS*|*CYGWIN*) return 0 ;;
