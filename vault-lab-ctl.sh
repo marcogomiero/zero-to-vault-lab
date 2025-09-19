@@ -1,5 +1,5 @@
 #!/bin/bash
-# Main entrypoint – deploy a local HashiCorp Vault lab environment.
+
 
 # Consenti override da ambiente, default “latest”
 VAULT_VERSION="${VAULT_VERSION:-latest}"
@@ -1504,7 +1504,7 @@ import_backup() {
 display_help() {
     cat <<'EOF'
 Usage:
-  ./test.sh [OPTIONS] COMMAND [ARGS]
+  ./vault-lab-ctl.sh [OPTIONS] COMMAND [ARGS]
 
 Deploy a local HashiCorp Vault lab environment with optional Consul backend.
 
@@ -1535,10 +1535,10 @@ Backup/Restore:
   import-backup <path> [name]       Import a backup from a tar.gz file
 
 Examples:
-  ./test.sh --tls start
-  ./test.sh --cluster multi --backend consul start
-  ./test.sh backup my-config "Working KV setup"
-  ./test.sh restore my-config
+  ./vault-lab-ctl.sh --tls start
+  ./vault-lab-ctl.sh --cluster multi --backend consul start
+  ./vault-lab-ctl.sh backup my-config "Working KV setup"
+  ./vault-lab-ctl.sh restore my-config
 EOF
     exit 0
 }
