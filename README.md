@@ -122,16 +122,10 @@ Environment pre-configured with:
 ================================
 
 - VAULT_ADDR set to correct endpoint (HTTP/HTTPS)
-=================================================
-
 - VAULT_TOKEN set to root token
-===============================
-
 - VAULT_CACERT set for TLS mode
-===============================
-
 - PATH includes vault and consul binaries
-=========================================
+
 
 🔐 Demo Engines Out of the Box
 ------------------------------
