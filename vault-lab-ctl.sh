@@ -961,9 +961,9 @@ cleanup_expired_certificates() {
 # --- Integration functions to modify existing Vault/Consul configs ---
 
 configure_vault_with_tls() {
-    local node_name="${1:-vault-server}"
-    local port="${2:-8200}"
-    local cluster_port="${3:-8201}"
+    local node_name="vault-server"
+    local port="8200"
+    local cluster_port="8201"
 
     setup_tls_infrastructure
 
@@ -1506,16 +1506,23 @@ stop_lab_environment() {
 cleanup_previous_environment() {
     log INFO "FULL CLEANUP OF PREVIOUS LAB ENVIRONMENT"
 
+    # Stop Consul if running
     if [ -f "$CONSUL_DIR/consul.pid" ]; then
         log INFO "Stopping Consul server..."
         kill "$(cat "$CONSUL_DIR/consul.pid")" 2>/dev/null || true
         rm -f "$CONSUL_DIR/consul.pid"
     fi
 
-    if [ -f "$VAULT_DIR/vault.pid" ]; then
-        log INFO "Stopping Vault server..."
-        kill "$(cat "$VAULT_DIR/vault.pid")" 2>/dev/null || true
-        rm -f "$VAULT_DIR/vault.pid"
+    # Stop all Vault nodes
+    if [ -d "$VAULT_DIR" ]; then
+        log INFO "Stopping Vault server(s)..."
+        # kill any pid files in vault-data and its subdirectories
+        find "$VAULT_DIR" -name 'vault.pid' -print | while read -r pidfile; do
+            kill "$(cat "$pidfile")" 2>/dev/null || true
+            rm -f "$pidfile"
+        done
+        # safety net: kill any leftover vault server processes
+        pkill -f 'vault server' 2>/dev/null || true
     fi
 
     log INFO "Deleting previous working directories..."
@@ -1805,7 +1812,6 @@ parse_args() {
 }
 
 main() {
-    apply_color_settings
     parse_args "$@"
 
     # carica backend da file se serve
