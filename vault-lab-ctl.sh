@@ -5,7 +5,7 @@
 VAULT_VERSION="${VAULT_VERSION:-latest}"
 CONSUL_VERSION="${CONSUL_VERSION:-latest}"
 
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." &> /dev/null && pwd )"
+SCRIPT_DIR="$(pwd)"
 BASE_DIR="$SCRIPT_DIR"
 
 BIN_DIR="$SCRIPT_DIR/bin"
@@ -261,7 +261,7 @@ _download_hashicorp_binary() {
 
     log INFO "${product^^} binary management: check and download"
 
-    # Se non specificato, determina la versione pi recente
+    # Determine target version if 'latest'
     local target_version="$requested_version"
     if [ "$requested_version" = "latest" ]; then
         local releases_json
@@ -279,18 +279,30 @@ _download_hashicorp_binary() {
         log INFO "Requested ${product} version: $target_version"
     fi
 
-    # Se il binario esiste gi ed  alla versione giusta, esci
+    # --- NEW: check system-wide binary first ---
+    if command -v "$product" >/dev/null 2>&1; then
+        local sys_version
+        sys_version=$("$product" --version | awk 'NR==1{print $2}' | sed 's/^v//')
+        if [ "$sys_version" = "$target_version" ]; then
+            log INFO "System-wide ${product} (v$sys_version) is up to date. Skipping download."
+            trap - EXIT INT TERM; rm -rf "$temp_dir"
+            return 0
+        fi
+    fi
+
+    # If bin_dir binary exists and is correct, skip download
     if [ -x "$product_exe" ]; then
         local current_version
         current_version=$("$product_exe" --version | head -n1 | awk '{print $2}' | sed 's/^v//')
         if [ "$current_version" = "$target_version" ]; then
-            log INFO "Current ${product} binary (v$current_version) is up to date."
+            log INFO "Current local ${product} binary (v$current_version) is up to date."
             trap - EXIT INT TERM; rm -rf "$temp_dir"
             return 0
         fi
         log INFO "Updating ${product} from v$current_version to v$target_version..."
     fi
 
+    # Download and install if needed
     local url="https://releases.hashicorp.com/${product}/${target_version}/${product}_${target_version}_${platform}.zip"
     log INFO "Downloading ${product} v$target_version from $url"
     curl -fsSL -o "$temp_dir/${product}.zip" "$url" || log ERROR "Download failed."
@@ -328,7 +340,6 @@ get_consul_status() {
 
 configure_and_start_consul() {
     log INFO "CONFIGURING AND STARTING CONSUL (SINGLE NODE SERVER)"
-    mkdir -p "$CONSUL_DIR/data" || log ERROR "Failed to create Consul directories."
     stop_consul
 
     cat > "$CONSUL_DIR/consul_config.hcl" <<EOF
@@ -373,73 +384,9 @@ EOF
     fi
 }
 
-start_consul_with_tls() {
-    log INFO "Starting Consul server with TLS in background..."
-    local consul_exe=$(get_consul_exe)
+start_consul_with_tls()        { start_consul_tls; }
 
-    # Imposta le variabili ambiente per TLS
-    export CONSUL_CACERT="$CA_CERT"
-
-    "$consul_exe" agent -config-dir="$CONSUL_DIR" > "$CONSUL_DIR/consul.log" 2>&1 &
-    echo $! > "$LAB_CONSUL_PID_FILE"
-    log INFO "Consul PID saved to $LAB_CONSUL_PID_FILE"
-
-    # Aggiorna CONSUL_ADDR per HTTPS
-    CONSUL_ADDR="https://127.0.0.1:8500"
-    export CONSUL_CACERT="$CA_CERT"
-    export CONSUL_HTTP_ADDR="$CONSUL_ADDR"  # Variabile specifica per il client CLI
-    export CONSUL_HTTP_SSL=true             # Abilita SSL per il client CLI
-
-    wait_for_consul_up "$CONSUL_ADDR"
-    sleep 5
-
-    log INFO "Bootstrapping Consul ACL Master Token..."
-    local token_file="$CONSUL_DIR/acl_master_token.txt"
-    if [ -f "$token_file" ]; then
-        log INFO "Re-using existing Consul ACL Master Token."
-        export CONSUL_HTTP_TOKEN=$(cat "$token_file")
-    else
-        # Usa le variabili ambiente corrette per HTTPS
-        local bootstrap_output
-        bootstrap_output=$(CONSUL_HTTP_ADDR="$CONSUL_ADDR" CONSUL_CACERT="$CA_CERT" CONSUL_HTTP_SSL=true "$consul_exe" acl bootstrap -format=json 2>&1)
-
-        if [ $? -ne 0 ]; then
-            log ERROR "ACL bootstrap failed: $bootstrap_output"
-        fi
-
-        local root_token=$(echo "$bootstrap_output" | jq -r '.SecretID' 2>/dev/null)
-        if [ -z "$root_token" ] || [ "$root_token" == "null" ]; then
-            log ERROR "Failed to extract Consul ACL Master Token from: $bootstrap_output"
-        fi
-        echo "$root_token" > "$token_file"
-        log INFO "Consul ACL Master Token saved to $token_file."
-        export CONSUL_HTTP_TOKEN="$root_token"
-    fi
-}
-
-# ALTERNATIVA SEMPLICE: Se continua a dare problemi, puoi usare questa versione
-# che bypassa temporaneamente il bootstrap ACL per il lab:
-
-start_consul_with_tls_no_acl() {
-    log INFO "Starting Consul server with TLS in background..."
-    local consul_exe=$(get_consul_exe)
-
-    # Modifica temporaneamente la configurazione per disabilitare ACL
-    sed -i 's/enabled = true/enabled = false/' "$CONSUL_DIR/consul_config.hcl"
-
-    export CONSUL_CACERT="$CA_CERT"
-    "$consul_exe" agent -config-dir="$CONSUL_DIR" > "$CONSUL_DIR/consul.log" 2>&1 &
-    echo $! > "$LAB_CONSUL_PID_FILE"
-    log INFO "Consul PID saved to $LAB_CONSUL_PID_FILE"
-
-    CONSUL_ADDR="https://127.0.0.1:8500"
-    export CONSUL_CACERT="$CA_CERT"
-    export CONSUL_HTTP_ADDR="$CONSUL_ADDR"
-    export CONSUL_HTTP_SSL=true
-
-    wait_for_consul_up "$CONSUL_ADDR"
-    log INFO "Consul started with TLS but ACL disabled for lab simplicity."
-}
+start_consul_with_tls_no_acl() { start_consul_tls --no-acl; }
 
 get_vault_exe() { get_exe "vault"; }
 
@@ -519,7 +466,6 @@ configure_and_start_vault() {
 
     local storage_config=""
     if [ "$BACKEND_TYPE" == "file" ]; then
-        mkdir -p "$VAULT_DIR/storage"
         storage_config="storage \"file\" { path = \"$VAULT_DIR/storage\" }"
     elif [ "$BACKEND_TYPE" == "consul" ]; then
         local consul_token=$(cat "$CONSUL_DIR/acl_master_token.txt")
@@ -1038,7 +984,6 @@ configure_vault_with_tls() {
 
     local storage_config=""
     if [ "$BACKEND_TYPE" == "file" ]; then
-        mkdir -p "$VAULT_DIR/storage"
         storage_config="storage \"file\" { path = \"$VAULT_DIR/storage\" }"
     elif [ "$BACKEND_TYPE" == "consul" ]; then
         local consul_token=$(cat "$CONSUL_DIR/acl_master_token.txt" 2>/dev/null)
@@ -1544,7 +1489,6 @@ EOF
 }
 
 save_backend_type_to_config() {
-    mkdir -p "$VAULT_DIR"
     echo "BACKEND_TYPE=\"$BACKEND_TYPE\"" > "$LAB_CONFIG_FILE"
     echo "CLUSTER_MODE=\"$CLUSTER_MODE\"" >> "$LAB_CONFIG_FILE"
     echo "ENABLE_TLS=\"$ENABLE_TLS\"" >> "$LAB_CONFIG_FILE"
@@ -1576,12 +1520,22 @@ stop_lab_environment() {
 
 cleanup_previous_environment() {
     log INFO "FULL CLEANUP OF PREVIOUS LAB ENVIRONMENT"
-    stop_lab_environment
-    rm -f "$LAB_CONFIG_FILE"
+
+    if [ -f "$CONSUL_DIR/consul.pid" ]; then
+        log INFO "Stopping Consul server..."
+        kill "$(cat "$CONSUL_DIR/consul.pid")" 2>/dev/null || true
+        rm -f "$CONSUL_DIR/consul.pid"
+    fi
+
+    if [ -f "$VAULT_DIR/vault.pid" ]; then
+        log INFO "Stopping Vault server..."
+        kill "$(cat "$VAULT_DIR/vault.pid")" 2>/dev/null || true
+        rm -f "$VAULT_DIR/vault.pid"
+    fi
+
     log INFO "Deleting previous working directories..."
-    rm -rf "$VAULT_DIR" "$CONSUL_DIR"
-    mkdir -p "$VAULT_DIR" "$CONSUL_DIR"
-    log INFO "Cleanup completed. "
+    rm -rf "$VAULT_DIR" "$CONSUL_DIR" "$CERTS_DIR"
+    log INFO "Cleanup completed."
 }
 
 check_lab_status() {
@@ -1690,6 +1644,10 @@ start_lab_environment_core() {
     validate_ports_available
     mkdir -p "$BIN_DIR"
 
+    # --- NEW: create all required directories up front ---
+    mkdir -p "$VAULT_DIR" "$CONSUL_DIR" "$TLS_DIR" "$CERTS_DIR" "$CA_DIR" || \
+        log ERROR "Failed to create base directories"
+
     check_and_install_prerequisites
     download_latest_vault_binary "$BIN_DIR"
 
@@ -1767,6 +1725,61 @@ reset_lab_environment() {
     log INFO "RESETTING VAULT LAB ENVIRONMENT"
     cleanup_previous_environment
     start_lab_environment_core
+}
+
+# Unified function to start Consul with TLS
+# Usage: start_consul_tls [--no-acl]
+start_consul_tls() {
+    local disable_acl=false
+    [[ "$1" == "--no-acl" ]] && disable_acl=true
+
+    log INFO "Starting Consul server with TLS in background..."
+    local consul_exe
+    consul_exe=$(get_consul_exe)
+
+    # Make sure we have TLS material
+    export CONSUL_CACERT="$CA_CERT"
+
+    # If requested, disable ACL in the config
+    if $disable_acl; then
+        sed -i 's/enabled = true/enabled = false/' "$CONSUL_DIR/consul_config.hcl" \
+            || log ERROR "Failed to modify Consul config for no-ACL mode"
+        log WARN "ACL disabled for lab simplicity."
+    fi
+
+    "$consul_exe" agent -config-dir="$CONSUL_DIR" > "$CONSUL_DIR/consul.log" 2>&1 &
+    echo $! > "$LAB_CONSUL_PID_FILE"
+    log INFO "Consul PID saved to $LAB_CONSUL_PID_FILE"
+
+    # Update environment for HTTPS
+    CONSUL_ADDR="https://127.0.0.1:8500"
+    export CONSUL_CACERT="$CA_CERT"
+    export CONSUL_HTTP_ADDR="$CONSUL_ADDR"
+    export CONSUL_HTTP_SSL=true
+
+    wait_for_http_up "$CONSUL_ADDR/v1/status/leader" 30 "Consul"
+
+    # Bootstrap ACL master token only if ACL is enabled
+    if ! $disable_acl; then
+        log INFO "Bootstrapping Consul ACL Master Token..."
+        local token_file="$CONSUL_DIR/acl_master_token.txt"
+        if [ -f "$token_file" ]; then
+            log INFO "Re-using existing Consul ACL Master Token."
+            export CONSUL_HTTP_TOKEN=$(cat "$token_file")
+        else
+            local bootstrap_output
+            bootstrap_output=$(CONSUL_HTTP_ADDR="$CONSUL_ADDR" CONSUL_CACERT="$CA_CERT" \
+                CONSUL_HTTP_SSL=true "$consul_exe" acl bootstrap -format=json 2>&1) \
+                || log ERROR "ACL bootstrap failed: $bootstrap_output"
+
+            local root_token
+            root_token=$(echo "$bootstrap_output" | jq -r '.SecretID' 2>/dev/null)
+            [ -z "$root_token" ] && log ERROR "Failed to extract Consul ACL Master Token."
+            echo "$root_token" > "$token_file"
+            export CONSUL_HTTP_TOKEN="$root_token"
+            log INFO "Consul ACL Master Token saved to $token_file."
+        fi
+    fi
 }
 
 parse_args() {
