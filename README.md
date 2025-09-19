@@ -1,238 +1,194 @@
-Zero-to-Vault-Lab 🚀
-====================
+**ZERO-TO-VAULT-LAB**
 
 Your entire **HashiCorp Vault** playground, built from nothing in minutes.\
-Run **one command** and watch the script pull the latest binaries, wire up TLS, enable auto-unseal, and spin up a multi-node Vault + Consul cluster that's ready for real testing.
-
-🌟 Why It's Awesome
--------------------
-
--   **Single-file convenience** -- everything is now bundled in one script (`vault-lab-ctl.sh`); no extra library folder to chase.
-
--   **Self-assembling environment** -- downloads and configures every required binary and dependency automatically.
-
--   **Multi-cluster capable** -- launch a full 3-node Vault cluster with Consul backend for high-availability scenarios, or stick to a single node for quick tests.
-
--   **Secure by default** -- automatic TLS certificate generation with CA, encrypted connections, and auto-unseal handled transparently.
-
--   **Break it & rebuild it** -- policies, auth methods, secret engines... experiment freely, then reset with one command.
-
--   **Batteries included** -- KV v2, PKI, Transit and Database engines pre-enabled so you can focus on learning, not bootstrapping.
-
--   **Enterprise-ready patterns** -- backup/restore, certificate management, multi-backend support for realistic testing scenarios.
-
-⚡ Quick Start
--------------
-
-git clone https://github.com/your-repo/zero-to-vault-lab.git
-cd zero-to-vault-lab
-
-# Default setup: single node, file backend, no TLS
-./vault-lab-ctl.sh start
-
-... or ...
-
-🔒 TLS-First Security
----------------------
-
-Start with automatic TLS encryption
-===================================
-
-./vault-lab-ctl.sh --tls start
-
-Or enable interactively when prompted
-=====================================
-
-./vault-lab-ctl.sh start
-
--> Enable TLS/SSL encryption? (y/N): y
-======================================
-
-What you get with TLS:
-
--   Self-signed CA certificate for the lab environment
-
--   Individual certificates for each Vault and Consul node
-
--   HTTPS endpoints (<https://127.0.0.1:8200>, <https://127.0.0.1:8500>)
-
--   Proper certificate validation and Subject Alternative Names
-
--   Certificate backup/restore in lab snapshots
-
-Trust the lab CA:
-
-Linux\
-sudo cp tls/ca/ca-cert.pem /usr/local/share/ca-certificates/vault-lab-ca.crt\
-sudo update-ca-certificates
-
-macOS\
-sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain tls/ca/ca-cert.pem
-
-Windows\
-Import tls/ca/ca-cert.pem via certmgr.msc into Trusted Root Certification Authorities
-
-🧩 Key Features
----------------
-
-Feature What You Get
+Run one command and the script pulls the latest binaries, wires up TLS, enables auto-unseal, and spins up a multi-node Vault + Consul cluster ready for testing.
 
 * * * * *
 
-Single or Multi Mode Choose a simple single node or a 3-node Vault cluster backed by Consul.\
-TLS Encryption Automatic certificate generation, HTTPS endpoints, proper certificate validation.\
-Flexible Backends File storage for simplicity or Consul for distributed scenarios.\
-One-line lifecycle start, stop, restart, reset, cleanup, status, and an interactive shell with VAULT_TOKEN pre-set.\
-Backup & Restore Full-state hot and cold backups with SHA256 verification, export/import for easy sharing.\
-Pre-configured Auth Userpass test user (devuser/devpass) and AppRole with ready Role ID/Secret ID.\
-Secrets Engines Ready KV v2, PKI, Transit (encryption as a service), and Database (SQLite demo) enabled automatically.
+**WHY IT'S AWESOME**
 
-🚀 Advanced Usage
------------------
+- **Single-file convenience** -- everything lives in `vault-lab-ctl.sh`.\
+- **Self-assembling** -- downloads and configures all binaries and dependencies automatically.\
+- **Multi-cluster capable** -- 3-node Vault cluster with Consul backend or a single node for quick tests.\
+- **Secure by default** -- automatic TLS certificates, encrypted connections, auto-unseal.\
+- **Break it & rebuild it** -- experiment freely, reset with one command.\
+- **Batteries included** -- KV v2, PKI, Transit and Database engines pre-enabled.\
+- **Enterprise-ready** -- backup/restore, certificate management, multi-backend support.
 
-Multi-Node Cluster with TLS
+* * * * *
 
-./vault-lab-ctl.sh --cluster multi --backend consul --tls start
+**QUICK START**
 
-This starts:
+`git clone https://github.com/your-repo/zero-to-vault-lab.git
+cd zero-to-vault-lab
+./vault-lab-ctl.sh start      (single node, file backend, no TLS)`
 
--   1 Consul server with TLS and ACL
+* * * * *
 
--   3 Vault nodes (ports 8200/8201/8202) with individual certificates
+**TLS-FIRST SECURITY**
 
--   Automatic initialization and unseal across all nodes
+Start with automatic TLS:\
+`./vault-lab-ctl.sh --tls start`
 
--   Full HTTPS communication between components
+Enable interactively:\
+`./vault-lab-ctl.sh start` → answer **y** when asked "Enable TLS/SSL encryption?"
 
-Access Vault at <https://localhost:8200> and Consul at <https://localhost:8500>.
+**What TLS gives you**
 
-Backup and Restore Operations
+- Self-signed CA certificate\
+- Individual certificates for each Vault and Consul node\
+- HTTPS endpoints: **<https://127.0.0.1:8200>** and **<https://127.0.0.1:8500>**\
+- Proper certificate validation and SANs\
+- Certificate backup/restore in lab snapshots
 
-./vault-lab-ctl.sh backup my-config "Working KV setup with TLS"\
-./vault-lab-ctl.sh list-backups\
-./vault-lab-ctl.sh restore my-config\
-./vault-lab-ctl.sh export-backup my-config ./my-backup.tar.gz\
+Trust the lab CA:\
+Linux: `sudo cp tls/ca/ca-cert.pem /usr/local/share/ca-certificates/vault-lab-ca.crt && sudo update-ca-certificates`\
+macOS: `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain tls/ca/ca-cert.pem`\
+Windows: import `tls/ca/ca-cert.pem` into **Trusted Root Certification Authorities**.
+
+* * * * *
+
+**KEY FEATURES**
+
+| Feature | What you get |
+| --- | --- |
+| **Single/Multi Mode** | Single node or full 3-node Vault cluster backed by Consul |
+| **TLS Encryption** | Automatic certificates, HTTPS endpoints, full validation |
+| **Flexible Backends** | File storage for simplicity or Consul for distributed scenarios |
+| **One-line lifecycle** | start / stop / restart / reset / cleanup / status, plus interactive shell |
+| **Backup & Restore** | Full-state backups with SHA256 verification, easy export/import |
+| **Pre-configured Auth** | Userpass test user and AppRole with ready Role ID/Secret ID |
+| **Secrets Engines** | KV v2, PKI, Transit, and Database (SQLite demo) pre-enabled |
+
+* * * * *
+
+**ADVANCED USAGE**
+
+Multi-Node Cluster with TLS:\
+`./vault-lab-ctl.sh --cluster multi --backend consul --tls start`
+
+Starts:\
+- 1 Consul server with TLS and ACL\
+- 3 Vault nodes (ports 8200/8201/8202) with individual certificates\
+- Automatic initialization and unseal\
+- Full HTTPS communication
+
+Backup & Restore:
+
+```
+./vault-lab-ctl.sh backup my-config "Working KV setup with TLS"
+./vault-lab-ctl.sh list-backups
+./vault-lab-ctl.sh restore my-config
+./vault-lab-ctl.sh export-backup my-config ./my-backup.tar.gz
 ./vault-lab-ctl.sh import-backup ./my-backup.tar.gz imported-config
+```
 
-Interactive Shell
+Interactive Shell (environment pre-configured)
 
+`
 ./vault-lab-ctl.sh shell
+`
 
-Environment pre-configured with:
-================================
+Environment variables set automatically:
+  VAULT_ADDR
+  VAULT_TOKEN
+  VAULT_CACERT
+  PATH
 
-- VAULT_ADDR set to correct endpoint (HTTP/HTTPS)
-- VAULT_TOKEN set to root token
-- VAULT_CACERT set for TLS mode
-- PATH includes vault and consul binaries
+* * * * *
 
+**DEMO ENGINES OUT OF THE BOX**
 
-🔐 Demo Engines Out of the Box
-------------------------------
+- **KV v2** -- key/value secrets at `secret/`\
+- **PKI** -- issue and manage certificates with 10-year max TTL\
+- **Transit** -- encryption-as-a-service\
+  `vault write transit/encrypt/lab-key plaintext=$(base64 <<< "hello")`\
+- **Database (SQLite)** -- dynamic credentials\
+  `vault read database/creds/demo-role`\
+- **Authentication** -- Userpass and AppRole pre-configured with policies
 
--   KV v2 -- Standard key/value secrets at secret/
+* * * * *
 
--   PKI -- Issue and manage certificates with 10-year max TTL
+**COMMAND REFERENCE**
 
--   Transit -- Encryption-as-a-service with pre-created key lab-key\
-    vault write transit/encrypt/lab-key plaintext=$(base64 <<< "hello")
+Lifecycle
 
--   Database (SQLite) -- Dynamic credentials using sqlite-database-plugin\
-    vault read database/creds/demo-role # Generate demo creds with 1h TTL
+```
+./vault-lab-ctl.sh start      # start lab
+./vault-lab-ctl.sh stop       # stop services
+./vault-lab-ctl.sh restart    # restart and unseal
+./vault-lab-ctl.sh reset      # full reset and restart
+./vault-lab-ctl.sh status     # check service status
+./vault-lab-ctl.sh cleanup    # clean all data
+```
 
--   Authentication Methods -- Userpass and AppRole pre-configured with policies
+Configuration Options
 
-🛠️ Command Reference
----------------------
+```
+./vault-lab-ctl.sh --tls start
+./vault-lab-ctl.sh --cluster multi start
+./vault-lab-ctl.sh --backend consul start
+./vault-lab-ctl.sh --clean start
+./vault-lab-ctl.sh --verbose start
+```
 
-Lifecycle management
-====================
+Backup Operations
 
-./vault-lab-ctl.sh start # Start lab environment\
-./vault-lab-ctl.sh stop # Stop all services\
-./vault-lab-ctl.sh restart # Restart and unseal\
-./vault-lab-ctl.sh reset # Full reset and restart\
-./vault-lab-ctl.sh status # Check service status\
-./vault-lab-ctl.sh cleanup # Clean all data
-
-Configuration options
-=====================
-
-./vault-lab-ctl.sh --tls start # Force TLS encryption\
-./vault-lab-ctl.sh --cluster multi start # Multi-node cluster\
-./vault-lab-ctl.sh --backend consul start # Use Consul backend\
-./vault-lab-ctl.sh --clean start # Force cleanup before start\
-./vault-lab-ctl.sh --verbose start # Detailed output
-
-Backup operations
-=================
-
-./vault-lab-ctl.sh backup [name] [description]\
-./vault-lab-ctl.sh restore <name> [--force]\
-./vault-lab-ctl.sh list-backups\
-./vault-lab-ctl.sh delete-backup <name> [--force]\
-./vault-lab-ctl.sh export-backup <name> [path]\
+```
+./vault-lab-ctl.sh backup [name] [description]
+./vault-lab-ctl.sh restore <name> [--force]
+./vault-lab-ctl.sh list-backups
+./vault-lab-ctl.sh delete-backup <name> [--force]
+./vault-lab-ctl.sh export-backup <name> [path]
 ./vault-lab-ctl.sh import-backup <path> [name]
+```
 
-Utility
-=======
+* * * * *
 
-./vault-lab-ctl.sh shell # Interactive shell with env\
-./vault-lab-ctl.sh --help # Full help and examples
+**DIRECTORY STRUCTURE**
 
-📁 Directory Structure
-----------------------
+```
+zero-to-vault-lab/
+├─ vault-lab-ctl.sh      single all-in-one script
+├─ bin/                  downloaded binaries
+├─ vault-data/           Vault storage and config
+├─ consul-data/          Consul data and logs
+├─ tls/                  certificate authority and certs
+└─ backups/              lab state snapshots
+```
 
-zero-to-vault-lab/\
-├── vault-lab-ctl.sh # Single all-in-one script\
-├── bin/ # Downloaded binaries\
-├── vault-data/ # Vault storage and config\
-├── consul-data/ # Consul data and logs\
-├── tls/ # Certificate authority and certs\
-└── backups/ # Lab state snapshots
+* * * * *
 
-🔍 Troubleshooting
-------------------
+**TROUBLESHOOTING**
 
-TLS Certificate Issues:
+TLS Certificate Issues\
+- Certificates auto-generated with proper SAN entries for localhost/127.0.0.1\
+- Import the CA certificate to avoid browser warnings\
+- Check validity: `openssl x509 -in tls/ca/ca-cert.pem -text -noout`
 
--   Certificates are auto-generated with proper SAN entries for localhost/127.0.0.1
+Service Connection Issues\
+- Verify ports 8200 (Vault) and 8500 (Consul) are available\
+- Logs: `tail -f vault-data/vault.log` or `tail -f consul-data/consul.log`\
+- Use `./vault-lab-ctl.sh status` for service health
 
--   Import the CA certificate to avoid browser warnings
+Vault Sealed State\
+- Script handles unsealing automatically, but ensure `vault-data/unseal_key.txt` exists\
+- Manual unseal: `vault operator unseal $(cat vault-data/unseal_key.txt)`
 
--   Check certificate validity: openssl x509 -in tls/ca/ca-cert.pem -text -noout
+* * * * *
 
-Service Connection Issues:
+**ARCHITECTURE**
 
--   Verify ports 8200 (Vault) and 8500 (Consul) are available
+- Single Node + File Backend -- simplest setup\
+- Single Node + Consul Backend -- introduces Consul concepts\
+- Multi-Node + Consul Backend -- full HA cluster simulation\
+- Any combination with TLS -- production-like encrypted communication
 
--   Check service logs: tail -f vault-data/vault.log or tail -f consul-data/consul.log
+All configurations include the same set of pre-configured authentication methods, policies, and secrets engines for immediate hands-on learning.
 
--   Use ./vault-lab-ctl.sh status for service health overview
+* * * * *
 
-Vault Sealed State:
+**LEARN MORE**
 
--   Script handles unsealing automatically, but check vault-data/unseal_key.txt exists
-
--   Manual unseal: vault operator unseal $(cat vault-data/unseal_key.txt)
-
-🏗️ Architecture
-----------------
-
-The lab environment supports multiple deployment patterns:
-
--   Single Node + File Backend -- Simplest setup for learning basics
-
--   Single Node + Consul Backend -- Introduces Consul concepts
-
--   Multi-Node + Consul Backend -- Full HA cluster simulation
-
--   Any combination with TLS -- Production-like encrypted communication
-
-All configurations include the same rich set of pre-configured authentication methods, policies, and secrets engines for immediate hands-on learning.
-
-📚 Learn More
--------------
-
-This lab environment provides a foundation for exploring advanced Vault concepts including dynamic secrets, certificate management, encryption-as-a-service, and high availability patterns.\
-Clone. Run. Break it. Rebuild it. 🚀
+Explore dynamic secrets, certificate management, encryption-as-a-service, and high availability patterns.\
+Clone. Run. Break it. Rebuild it.
