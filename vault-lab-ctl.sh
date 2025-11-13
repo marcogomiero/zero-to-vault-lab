@@ -6,7 +6,6 @@ VAULT_VERSION="${VAULT_VERSION:-latest}"
 CONSUL_VERSION="${CONSUL_VERSION:-latest}"
 
 SCRIPT_DIR="$(pwd)"
-BASE_DIR="$SCRIPT_DIR"
 
 BIN_DIR="$SCRIPT_DIR/bin"
 VAULT_DIR="$SCRIPT_DIR/vault-data"
@@ -37,6 +36,12 @@ CA_CSR="$CA_DIR/ca-csr.json"
 
 BACKUP_DIR="$SCRIPT_DIR/backups"
 BACKUP_METADATA_FILE="backup_metadata.json"
+
+# EPHIMERAL MODE
+EPHEMERAL_MODE=false
+RUNTIME_DIR=""
+ROOT_TOKEN=""
+UNSEAL_KEY=""
 
 is_windows() {
     case "$(uname -s)" in
@@ -1796,6 +1801,7 @@ parse_args() {
                     backend)  BACKEND_TYPE="$2"; BACKEND_TYPE_SET_VIA_ARG=true; shift ;;
                     cluster)  CLUSTER_MODE="$2"; shift ;;
                     tls)      ENABLE_TLS=true; TLS_ENABLED_FROM_ARG=true ;;
+                    ephemeral) EPHEMERAL_MODE=true ;;
                     help)     display_help ;;
                     *) log ERROR "Unknown option --${OPTARG}" ;;
                 esac
@@ -1814,45 +1820,83 @@ parse_args() {
 main() {
     parse_args "$@"
 
-    # carica backend da file se serve
-    case "$COMMAND" in
-        start|reset|backup|list-backups|delete-backup|export-backup|import-backup) ;;
-        *) load_backend_type_from_config ;;
-    esac
-
     # prompt interattivi (cluster/backend/tls) solo per start/reset
     if [[ "$COMMAND" =~ ^(start|reset)$ ]]; then
-        if [[ ! "$CLUSTER_MODE" =~ ^(single|multi)$ ]]; then
-            echo -e "\n${YELLOW}Cluster mode (single/multi) [single]:${NC}"
-            read -r cchoice
-            CLUSTER_MODE=${cchoice:-single}
-        fi
-        echo -e "Using cluster mode: ${GREEN}$CLUSTER_MODE${NC}"
 
-        if [ "$BACKEND_TYPE_SET_VIA_ARG" = false ]; then
-            if [ "$CLUSTER_MODE" = "multi" ]; then
-                BACKEND_TYPE="consul"
-                echo -e "Cluster mode is multi: forcing backend to ${GREEN}consul${NC}"
-            else
-                echo -e "\n${YELLOW}Choose storage backend (file/consul) [file]:${NC}"
-                read -r choice
-                BACKEND_TYPE=${choice:-file}
+        if [ "$EPHEMERAL_MODE" = true ]; then
+            # Modalità zero-interazione
+            CLUSTER_MODE="single"
+            BACKEND_TYPE="file"
+            ENABLE_TLS=false
+
+            echo -e "${YELLOW}Ephemeral mode active: forcing single node, file backend, no TLS.${NC}"
+            echo -e "Using cluster mode: ${GREEN}$CLUSTER_MODE${NC}"
+            echo -e "Using backend: ${GREEN}$BACKEND_TYPE${NC}"
+            echo -e "TLS encryption: ${GREEN}disabled${NC}"
+
+        else
+            # ---------- QUI TUTTI I PROMPT NORMALI ----------
+            if [[ ! "$CLUSTER_MODE" =~ ^(single|multi)$ ]]; then
+                echo -e "\n${YELLOW}Cluster mode (single/multi) [single]:${NC}"
+                read -r cchoice
+                CLUSTER_MODE=${cchoice:-single}
             fi
-        fi
-        echo -e "Using backend: ${GREEN}$BACKEND_TYPE${NC}"
+            echo -e "Using cluster mode: ${GREEN}$CLUSTER_MODE${NC}"
 
-        if [ "$TLS_ENABLED_FROM_ARG" = false ]; then
-            echo -e "\n${YELLOW}Enable TLS/SSL encryption? (y/N):${NC}"
-            read -r tls_choice
-            [[ "$tls_choice" =~ ^[Yy] ]] && ENABLE_TLS=true
-        fi
-        echo -e "TLS encryption: ${GREEN}$([ "$ENABLE_TLS" = true ] && echo enabled || echo disabled)${NC}"
+            if [ "$BACKEND_TYPE_SET_VIA_ARG" = false ]; then
+                if [ "$CLUSTER_MODE" = "multi" ]; then
+                    BACKEND_TYPE="consul"
+                    echo -e "Cluster mode is multi: forcing backend to ${GREEN}consul${NC}"
+                else
+                    echo -e "\n${YELLOW}Choose storage backend (file/consul) [file]:${NC}"
+                    read -r choice
+                    BACKEND_TYPE=${choice:-file}
+                fi
+            fi
+            echo -e "Using backend: ${GREEN}$BACKEND_TYPE${NC}"
 
-        [ "$ENABLE_TLS" = true ] && {
-            VAULT_ADDR="https://127.0.0.1:8200"
-            CONSUL_ADDR="https://127.0.0.1:8500"
-        }
+            if [ "$TLS_ENABLED_FROM_ARG" = false ]; then
+                echo -e "\n${YELLOW}Enable TLS/SSL encryption? (y/N):${NC}"
+                read -r tls_choice
+                [[ "$tls_choice" =~ ^[Yy] ]] && ENABLE_TLS=true
+            fi
+            echo -e "TLS encryption: ${GREEN}$([ "$ENABLE_TLS" = true ] && echo enabled || echo disabled)${NC}"
+
+            [ "$ENABLE_TLS" = true ] && {
+                VAULT_ADDR="https://127.0.0.1:8200"
+                CONSUL_ADDR="https://127.0.0.1:8500"
+            }
+            # ---------- FINE PROMPT ----------
+        fi
     fi
+
+    # Reimposta le directory runtime dopo i prompt
+    if [ "$EPHEMERAL_MODE" = true ]; then
+        # directory effimera per tutto il lab
+        RUNTIME_DIR=$(mktemp -d -t vault-lab-XXXXXXXXXX)
+
+        VAULT_DIR="$RUNTIME_DIR/vault"
+        CONSUL_DIR="$RUNTIME_DIR/consul"
+        TLS_DIR="$RUNTIME_DIR/tls"
+
+        # derivati TLS
+        CA_DIR="$TLS_DIR/ca"
+        CERTS_DIR="$TLS_DIR/certs"
+        CA_KEY="$CA_DIR/ca-key.pem"
+        CA_CERT="$CA_DIR/ca-cert.pem"
+        CA_CONFIG="$CA_DIR/ca-config.json"
+        CA_CSR="$CA_DIR/ca-csr.json"
+
+        # pid file dentro le dir effimere
+        LAB_VAULT_PID_FILE="$VAULT_DIR/vault.pid"
+        LAB_CONSUL_PID_FILE="$CONSUL_DIR/consul.pid"
+
+        echo -e "${YELLOW}Ephemeral directories:${NC}"
+        echo "  VAULT_DIR=$VAULT_DIR"
+        echo "  CONSUL_DIR=$CONSUL_DIR"
+        echo "  TLS_DIR=$TLS_DIR"
+    fi
+
 
     # esecuzione comando
     case "$COMMAND" in
