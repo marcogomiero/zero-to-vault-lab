@@ -1779,6 +1779,48 @@ start_consul_tls() {
     fi
 }
 
+# --- Plugin Loader ---
+PLUGIN_DIR="$SCRIPT_DIR/plugins"
+
+load_plugins() {
+    if [ ! -d "$PLUGIN_DIR" ]; then
+        log INFO "Plugin directory not found: $PLUGIN_DIR (no plugins loaded)"
+        return
+    fi
+
+    local count=0
+
+    # Cerca *.sh, ignorando il caso di "nessun file"
+    for plugin in "$PLUGIN_DIR"/*.sh; do
+        # Se il glob non ha trovato nulla, lascia il literal '*.sh'
+        if [[ "$plugin" == "$PLUGIN_DIR/*.sh" ]]; then
+            break
+        fi
+
+        if [ -f "$plugin" ]; then
+            log INFO "Loading plugin: $(basename "$plugin")"
+            source "$plugin"
+            ((count++))
+        fi
+    done
+
+    if [ "$count" -eq 0 ]; then
+        log INFO "No plugins found in $PLUGIN_DIR"
+    else
+        log INFO "Total plugins loaded: $count"
+    fi
+}
+
+# --- Hook executor ---
+run_hook() {
+    local hook_name="$1"
+    # Se la funzione non esiste, ignora
+    if declare -F "$hook_name" >/dev/null; then
+        log INFO "Executing hook: $hook_name"
+        "$hook_name"
+    fi
+}
+
 parse_args() {
     # reset variabili globali
     FORCE_CLEANUP_ON_START=false
@@ -1818,7 +1860,19 @@ parse_args() {
 }
 
 main() {
+    clear
+
+    # --- If no arguments are provided, show help immediately ---
+    if [ $# -eq 0 ]; then
+        clear
+        display_help
+        exit 0
+    fi
+
     parse_args "$@"
+
+    # Load plugins BEFORE executing any command
+    load_plugins
 
     # prompt interattivi (cluster/backend/tls) solo per start/reset
     if [[ "$COMMAND" =~ ^(start|reset)$ ]]; then

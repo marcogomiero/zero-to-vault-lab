@@ -1,131 +1,179 @@
-ZERO-TO-VAULT-LAB
+**ZERO-TO-VAULT-LAB**
+=====================
 
-Zero-to-Vault-Lab gives you a fully operational HashiCorp Vault environment in the time it takes to inhale. One script, one command, and you're standing inside a complete Vault playground with everything wired, initialized, and ready to break.
+A full HashiCorp Vault environment in **one command**.
 
-This isn't a long setup guide or a pile of YAMLs. It's a living, self-building lab.
-
-Fast. Disposable. Repeatable. And strangely fun.
-
-* * * * *
-
-WHAT MAKES IT SPECIAL
-
-It's one file. A single, surgical control script that does everything: downloads binaries, creates directories, spins up Vault and Consul, generates certificates, configures engines, and unseals for you.
-
-It's self-assembling. You can clone the repository on a blank machine and still get a full Vault+Consul stack with no external dependencies and no "manual setup" ritual.
-
-It grows with you. Start with a simple single-node Vault using the file backend, or go straight to a full 3-node cluster backed by Consul. Everything is wired automatically.
-
-It behaves like production. TLS certificates, SANs, CA generation, HTTPS endpoints, proper validation --- all included at no extra effort.
-
-It forgives. Destroy the lab, reset it, rebuild it, test strange configurations, break the cluster on purpose. The script is designed to take a hit and come back smiling.
-
-It ships batteries. KV v2, Transit, PKI, AppRole, Userpass, a demo Database engine --- everything you'd want to explore Vault's capabilities right out of the gate.
-
-And then there's Ephemeral Mode. A mode for people who want speed above all else: the entire lab is created in a temporary system directory, runs from RAM, and vanishes cleanly on stop. No clutter, no cleanup, no leftovers.
+Spin up a complete Vault playground --- single-node or HA with Consul --- in seconds.\
+TLS, PKI, Transit, AppRole, Userpass, audit, and batteries included.\
+Build, break, reset, repeat.\
+No setup. No clutter. No fear.
 
 * * * * *
 
-QUICK START
+🚀 **Why this exists**
+----------------------
 
-Clone the repo and start a single-node Vault:\
-./vault-lab-ctl.sh start
+Because learning Vault shouldn't feel like assembling a server room.
 
-Or jump directly into a disposable in-memory lab:\
-./vault-lab-ctl.sh --ephemeral start
+This project gives you:
 
-Instant Vault, zero persistence, zero questions asked. Perfect for demos, experiments, or just playing.
+-   **Instant Vault** (single or multi node)
 
-* * * * *
+-   **Automatic TLS** (private CA, SANs, signed certs)
 
-TLS MODE
+-   **Consul optional** (file or Consul backend)
 
-Need HTTPS everywhere? Add --tls and the script creates a private CA, signs all Vault/Consul certificates, configures SANs, and serves endpoints on secure ports.
+-   **Preconfigured engines** (KV v2, Transit, PKI, Database, Userpass, AppRole)
 
-./vault-lab-ctl.sh --tls start
+-   **Plugin Mode** to extend the lab
 
-You get real certificates, real CA files, and real validation. Great for anyone studying mTLS, PKI workflows, or Vault in production-style conditions.
+-   **Ephemeral Mode** --- a RAM-only Vault that leaves zero traces
 
-* * * * *
-
-FEATURES AT A GLANCE
-
-Single-file architecture\
-Automated binary download\
-Single-node or multi-node cluster setups\
-File or Consul backend\
-Optional TLS with full certificate chain\
-Interactive shell with exported environment variables\
-Backup and restore (persistent mode)\
-Ephemeral Mode for pure in-memory labs\
-Pre-configured secrets engines and auth methods\
-Clean lifecycle commands: start, stop, restart, reset, cleanup, status
+No YAML. No Docker. No Terraform.\
+Just a script.
 
 * * * * *
 
-ADVANCED SCENARIOS
+🏁 **Quick Start**
+------------------
 
-Spin up a full 3-node Vault HA cluster with Consul and TLS:\
-./vault-lab-ctl.sh --cluster multi --backend consul --tls start
+Start a Vault lab:
 
-Take snapshots of your lab, export them, import them elsewhere, or restore them later --- ideal for teaching, testing, or simulating upgrades.
+`./vault-lab-ctl.sh start`
 
-Use the Transit or PKI engine immediately, generate dynamic credentials, or explore AppRole flows with the preconfigured roles the script creates.
+Start with TLS:
 
-Drop into an interactive shell:\
-./vault-lab-ctl.sh shell
+`./vault-lab-ctl.sh --tls start`
 
-You'll find VAULT_ADDR, VAULT_TOKEN, PATH and CA variables already set.
+Start a **disposable**, in-memory Vault:
 
-* * * * *
+`./vault-lab-ctl.sh --ephemeral start`
 
-EPHEMERAL MODE
+Stop:
 
-This mode deserves its own spotlight.
+`./vault-lab-ctl.sh stop`
 
-./vault-lab-ctl.sh --ephemeral start
+Reset the lab:
 
-No prompts.\
-No persistent folders.\
-No lingering files.\
-No cleanup required.
-
-Vault, Consul, TLS assets, logs, PIDs --- everything lives under a randomly generated runtime directory and disappears when you stop the lab.
-
-It feels like spinning up a mini-cluster inside RAM. Because that's exactly what it is.
-
-Use it when you want to experiment without consequences. When you want to learn Vault by breaking things. Or when you need a clean environment immediately, without touching the project tree.
+`./vault-lab-ctl.sh reset`
 
 * * * * *
 
-TROUBLESHOOTING
+🔥 **Ephemeral Mode --- a killer feature**
+----------------------------------------
 
-If something feels off, the status command gives you a clear picture of what's running.\
-TLS issues? The CA and certificates are generated fresh each time, and SANs are correct out of the box.\
-Service not responding? Check port usage or view live logs directly in the runtime directory.
+Ephemeral Mode creates a full Vault+Consul environment that **lives entirely in RAM**\
+and **vanishes** cleanly when you stop it.
 
-Vault sealed? The script handles unseal automatically, but you can always unseal manually using the generated key when running in persistent mode.
+-   No persistent folders
+
+-   No secret leftovers
+
+-   No cleanup required
+
+-   No pollution of your project directory
+
+-   Perfect for demos, workshops, conference talks, or chaos testing
+
+It feels like spinning up a **temporary Vault universe** --- built in seconds, erased instantly.
+
+`./vault-lab-ctl.sh --ephemeral start`
+
+This alone makes the lab dramatically more flexible than traditional Vault examples.
 
 * * * * *
 
-ARCHITECTURE OVERVIEW
+🔧 **Plugin Mode**
+------------------
 
-The lab supports multiple configurations:
+Drop any `*.sh` file in:
 
-- Single node with file backend\
-- Single node with Consul backend\
-- Multi-node Vault cluster with Consul\
-- TLS or non-TLS mode\
-- Persistent mode with filesystem storage\
-- Ephemeral mode with everything in RAM
+`plugins/`
 
-Each configuration enables the same set of auth methods and secrets engines so you can get to the good stuff immediately.
+Example:
+
+`on_after_start() {
+    log INFO "[demo] Vault has started!"
+}`
+
+Plugins are automatically:
+
+-   discovered
+
+-   sourced
+
+-   ordered
+
+-   connected to lifecycle hooks
+
+This turns the lab into a **framework** instead of a monolithic script.
 
 * * * * *
 
-LEARN MORE
+🔐 **What comes preconfigured**
+-------------------------------
 
-This lab is not meant to be static. It's a place to explore dynamic secrets, encryption-as-a-service, identity models, PKI lifecycles, HA behavior, token flows, and operational patterns.
+You get a usable Vault from second zero.
 
-Clone it. Launch it. Break it. Rebuild it.\
-Vault makes more sense when you can take it apart safely --- and now you can.
+-   KV v2 (`secret/`)
+
+-   Transit (`transit/`)
+
+-   PKI (`pki/`)
+
+-   Userpass + AppRole ready for testing
+
+-   Database engine (demo config)
+
+-   Audit device (file or /dev/null)
+
+-   Shell mode with VAULT_ADDR and VAULT_TOKEN exported
+
+* * * * *
+
+📦 **Features at a glance**
+---------------------------
+
+-   Single-file architecture
+
+-   Automatic binary download
+
+-   Single-node or multi-node cluster
+
+-   File or Consul backend
+
+-   Optional TLS with full CA chain
+
+-   Backup & restore
+
+-   Full lifecycle: start, stop, restart, reset, cleanup, status
+
+-   Ephemeral Mode (RAM-only)
+
+-   Plugin Mode
+
+-   Works on Linux, macOS, Windows/WSL
+
+* * * * *
+
+🧠 **Use it for**
+-----------------
+
+-   Learning Vault
+
+-   Teaching Vault workshops
+
+-   PKI, Transit, AppRole experiments
+
+-   HA simulations
+
+-   Break/fix exercises
+
+-   Building custom modules via Plugin Mode
+
+-   Demo environments for talks & trainings
+
+* * * * *
+
+🌍 **Zero friction. Zero excuses. Zero to Vault.**
+--------------------------------------------------
