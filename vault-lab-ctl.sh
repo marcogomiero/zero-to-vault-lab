@@ -1,7 +1,7 @@
 #!/bin/bash
 
 
-# Consenti override da ambiente, default latest
+# Allow environment override, default latest
 VAULT_VERSION="${VAULT_VERSION:-latest}"
 CONSUL_VERSION="${CONSUL_VERSION:-latest}"
 
@@ -34,11 +34,9 @@ CA_CERT="$CA_DIR/ca-cert.pem"
 CA_CONFIG="$CA_DIR/ca-config.json"
 CA_CSR="$CA_DIR/ca-csr.json"
 
-BACKUP_DIR="$SCRIPT_DIR/backups"
-BACKUP_METADATA_FILE="backup_metadata.json"
-
-# EPHIMERAL MODE
+# EPHEMERAL MODE
 EPHEMERAL_MODE=false
+INTERACTIVE_MODE=false
 RUNTIME_DIR=""
 ROOT_TOKEN=""
 UNSEAL_KEY=""
@@ -98,21 +96,21 @@ validate_ports_available() {
     local consul_port=8500
 
     if lsof -Pi :$vault_port -sTCP:LISTEN -t >/dev/null ; then
-        log ERROR "La porta $vault_port  gi in uso. Chiudi il processo o usa una porta diversa."
+        log ERROR "Port $vault_port is already in use. Close the process or use a different port."
     fi
 
     if [ "$BACKEND_TYPE" == "consul" ] && lsof -Pi :$consul_port -sTCP:LISTEN -t >/dev/null ; then
-        log ERROR "La porta $consul_port  gi in uso. Chiudi il processo o usa una porta diversa."
+        log ERROR "Port $consul_port is already in use. Close the process or use a different port."
     fi
     log INFO "Port validation successful. "
 }
 
 validate_directories() {
     if [ ! -w "$SCRIPT_DIR" ]; then
-        log ERROR "La directory base $SCRIPT_DIR non  scrivibile. Controlla i permessi."
+        log ERROR "The base directory $SCRIPT_DIR is not writable. Check permissions."
     fi
     if [ ! -w "$(dirname "$BIN_DIR")" ]; then
-        log ERROR "La directory padre di $BIN_DIR non  scrivibile. Controlla i permessi."
+        log ERROR "The parent directory of $BIN_DIR is not writable. Check permissions."
     fi
     log INFO "Directory validation successful. "
 }
@@ -127,14 +125,14 @@ stop_service() {
     log INFO "Attempting to stop ${name} server..."
     pids=$(pgrep -f "$process_pattern" || true)
     if [ -n "$pids" ]; then
-        log INFO "Trovati processi ${name} esistenti: $pids. Terminazione..."
+        log INFO "Found existing: $pids. Stopping..."
         kill -TERM $pids 2>/dev/null || true; sleep 2; kill -9 $pids 2>/dev/null || true
     fi
 
     if [ -f "$pid_file" ]; then
         local pid=$(cat "$pid_file")
         if ps -p "$pid" >/dev/null; then
-            log INFO "Stopping ${name} process with PID $pid..."
+            log INFO "Stopping process with PID $pid..."
             kill "$pid" >/dev/null 2>&1; sleep 5
             if ps -p "$pid" >/dev/null; then
                 log WARN "Forcing kill for ${name} (PID: $pid)..."
@@ -148,7 +146,7 @@ stop_service() {
     if [ -n "$port" ]; then
         lingering_pid=$(lsof -ti:"$port" 2>/dev/null || true)
         if [ -n "$lingering_pid" ]; then
-            log WARN "Processi residui sulla porta $port: $lingering_pid. Terminazione..."
+            log WARN "Lingering processes on port $port: $lingering_pid. Stopping..."
             kill -9 "$lingering_pid" 2>/dev/null || true
         fi
     fi
@@ -234,8 +232,8 @@ check_and_install_prerequisites() {
 }
 
 _download_hashicorp_binary() {
-    local product="$1" bin_dir="$2"           # es: vault, consul
-    local requested_version="${3:-latest}"    # terzo arg facoltativo
+    local product="$1" bin_dir="$2"           # e.g., vault, consul
+    local requested_version="${3:-latest}"    # third optional argument
     local platform="linux_amd64"
 
     case "$(uname -s)" in
@@ -404,14 +402,14 @@ wait_for_vault_ready() {
     log INFO "Waiting for Vault to be fully ready..."
 
     while [ $attempt -le $max_attempts ]; do
-        # Prova una chiamata API semplice invece del status JSON
+        # Try a simple API call instead of JSON status
         if [ "$ENABLE_TLS" = true ]; then
             local response=$(curl -s -w "%{http_code}" -o /dev/null --cacert "$CA_CERT" -H "X-Vault-Token: $(cat "$VAULT_DIR/root_token.txt")" "$VAULT_ADDR/v1/sys/health" 2>/dev/null || echo "000")
         else
             local response=$(curl -s -w "%{http_code}" -o /dev/null -H "X-Vault-Token: $(cat "$VAULT_DIR/root_token.txt")" "$VAULT_ADDR/v1/sys/health" 2>/dev/null || echo "000")
         fi
 
-        # Vault health check restituisce 200 se unsealed e ready
+        # Vault health check returns 200 if unsealed and ready
         if [ "$response" = "200" ]; then
             log INFO "Vault is ready after $attempt attempts."
             return 0
@@ -423,7 +421,7 @@ wait_for_vault_ready() {
     done
 
     log WARN "Vault readiness check timed out after $max_attempts attempts, proceeding anyway..."
-    return 0  # Non blocchiamo il processo, procediamo comunque
+    return 0  # Don't block the process, proceed anyway
 }
 
 stop_vault() {
@@ -442,7 +440,7 @@ stop_vault() {
 
 get_vault_status() {
     local vault_exe=$(get_vault_exe)
-    # Assicurati che le variabili ambiente siano impostate correttamente
+    # Ensure environment variables are set correctly
     if [ "$ENABLE_TLS" = true ]; then
         VAULT_ADDR="$VAULT_ADDR" VAULT_CACERT="$CA_CERT" "$vault_exe" status -format=json 2>/dev/null
     else
@@ -485,7 +483,7 @@ start_vault_with_tls() {
     log INFO "Starting Vault server with TLS in background..."
     local vault_exe=$(get_vault_exe)
 
-    # Imposta le variabili ambiente per TLS
+    # Set environment variables for TLS
     export VAULT_CACERT="$CA_CERT"
 
     "$vault_exe" server -config="$VAULT_DIR/config.hcl" > "$VAULT_DIR/vault.log" 2>&1 &
@@ -532,7 +530,7 @@ start_vault_nodes_with_tls() {
         local node_dir="$VAULT_DIR/node_$i"
         mkdir -p "$node_dir"
 
-        # Genera certificato per questo nodo
+        # Generate certificate for this node
         generate_vault_certificate "vault-node$i" "127.0.0.1"
 
         cat > "$node_dir/config.hcl" <<EOF
@@ -564,7 +562,7 @@ EOF
         wait_for_vault_up "https://127.0.0.1:$port"
     done
 
-    # Aggiorna VAULT_ADDR per il primo nodo
+    # Update VAULT_ADDR for the first node
     VAULT_ADDR="https://127.0.0.1:8200"
     export VAULT_CACERT="$CA_CERT"
     export VAULT_ADDR="$VAULT_ADDR"
@@ -573,7 +571,7 @@ EOF
 initialize_and_unseal_vault() {
     log INFO "INITIALIZING AND UNSEALING VAULT"
 
-    # Imposta le variabili ambiente per TLS se abilitato
+    # Set environment variables for TLS se abilitato
     if [ "$ENABLE_TLS" = true ]; then
         export VAULT_CACERT="$CA_CERT"
     fi
@@ -595,7 +593,7 @@ initialize_and_unseal_vault() {
         log WARN "INSECURE: Credentials are saved in plain text in $VAULT_DIR."
     fi
 
-    # Ricontrolla lo status dopo l'inizializzazione
+    # Re-check status after initialization
     status_json=$(get_vault_status)
     if [ "$(echo "$status_json" | jq -r '.sealed')" == "true" ]; then
         log INFO "Vault is sealed. Unsealing..."
@@ -616,10 +614,10 @@ initialize_and_unseal_vault() {
             log INFO "Vault unsealed successfully."
         fi
 
-        # Aspetta un momento per stabilizzazione
+        # Wait for stabilization
         sleep 5
 
-        # Verifica di nuovo lo status
+        # Verify status again
         status_json=$(get_vault_status)
         if [ "$(echo "$status_json" | jq -r '.sealed')" == "true" ]; then
             log ERROR "Vault is still sealed after unseal operation. Check logs."
@@ -758,7 +756,7 @@ generate_ca_certificate() {
         log INFO "CA certificate already exists, reusing."
     fi
 
-    # Verifica che i file CA esistano
+    # Verify CA files exist
     if [ ! -f "$CA_CERT" ] || [ ! -f "$CA_KEY" ]; then
         log ERROR "CA certificate or key missing after generation"
     fi
@@ -777,15 +775,15 @@ generate_vault_certificate() {
     local csr_file="$CERTS_DIR/${node_name}.csr"
 
     if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
-        # Genera chiave privata
+        # Generate private key
         openssl genrsa -out "$key_file" 2048 || log ERROR "Failed to generate private key for $node_name"
 
-        # Crea CSR
+        # Create CSR
         openssl req -new -key "$key_file" -out "$csr_file" \
             -subj "/C=IT/ST=Virtual/L=Lab/O=Vault Lab/CN=$node_name" \
             || log ERROR "Failed to generate CSR for $node_name"
 
-        # Crea config per Subject Alternative Names
+        # Create config for Subject Alternative Names
         local san_config="$CERTS_DIR/${node_name}.conf"
         cat > "$san_config" <<EOF
 [req]
@@ -841,10 +839,10 @@ generate_consul_certificate() {
     local csr_file="$CERTS_DIR/${node_name}.csr"
 
     if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
-        # Genera chiave privata
+        # Generate private key
         openssl genrsa -out "$key_file" 2048 || log ERROR "Failed to generate private key for $node_name"
 
-        # Crea CSR
+        # Create CSR
         openssl req -new -key "$key_file" -out "$csr_file" \
             -subj "/C=IT/ST=Virtual/L=Lab/O=Vault Lab/CN=$node_name" \
             || log ERROR "Failed to generate CSR for $node_name"
@@ -1071,370 +1069,6 @@ EOF
     export CONSUL_CACERT="$CA_CERT"
 }
 
-list_backups() {
-    log INFO "LISTING AVAILABLE BACKUPS"
-
-    if [ ! -d "$BACKUP_DIR" ] || [ -z "$(ls -A "$BACKUP_DIR" 2>/dev/null)" ]; then
-        log WARN "No backups found in $BACKUP_DIR"
-        return 1
-    fi
-
-    echo -e "\n${YELLOW}Available backups:${NC}"
-    echo "----------------------------------------"
-    printf "%-25s %-15s %-8s %-12s %s\n" "NAME" "BACKEND" "TLS" "SIZE" "DATE"
-    echo "----------------------------------------"
-
-    for backup_path in "$BACKUP_DIR"/*; do
-        if [ -d "$backup_path" ]; then
-            local backup_name=$(basename "$backup_path")
-            local metadata_file="$backup_path/$BACKUP_METADATA_FILE"
-
-            if [ -f "$metadata_file" ]; then
-                local backend_type=$(jq -r '.backend_type // "unknown"' "$metadata_file" 2>/dev/null)
-                local tls_enabled=$(jq -r '.tls_enabled // false' "$metadata_file" 2>/dev/null)
-                local created_date=$(jq -r '.created_date // "unknown"' "$metadata_file" 2>/dev/null)
-                local size=$(du -sh "$backup_path" 2>/dev/null | cut -f1)
-                local tls_status=$([ "$tls_enabled" = "true" ] && echo "YES" || echo "NO")
-
-                printf "%-25s %-15s %-8s %-12s %s\n" "$backup_name" "$backend_type" "$tls_status" "$size" "$created_date"
-            else
-                printf "%-25s %-15s %-8s %-12s %s\n" "$backup_name" "unknown" "?" "?" "No metadata"
-            fi
-        fi
-    done
-    echo "----------------------------------------"
-}
-
-create_backup() {
-    local backup_name="$1"
-    local backup_description="$2"
-
-    # Se non viene fornito un nome, genera uno automatico
-    if [ -z "$backup_name" ]; then
-        backup_name="backup_$(date +%Y%m%d_%H%M%S)"
-    fi
-
-    # Valida il nome del backup
-    if [[ ! "$backup_name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-        log ERROR "Backup name must contain only letters, numbers, hyphens, and underscores."
-    fi
-
-    local backup_path="$BACKUP_DIR/$backup_name"
-
-    if [ -d "$backup_path" ]; then
-        log ERROR "Backup '$backup_name' already exists. Choose a different name or delete the existing backup."
-    fi
-
-    log INFO "CREATING BACKUP: $backup_name"
-    log INFO "Description: ${backup_description:-"No description provided"}"
-
-    # Controlla se il lab  attivo
-    local lab_running=false
-    if [ -f "$LAB_VAULT_PID_FILE" ] && ps -p "$(cat "$LAB_VAULT_PID_FILE")" > /dev/null 2>&1; then
-        lab_running=true
-        log INFO "Lab is currently running. Creating hot backup..."
-    else
-        log INFO "Lab is stopped. Creating cold backup..."
-    fi
-
-    # Crea la directory di backup
-    mkdir -p "$backup_path" || log ERROR "Failed to create backup directory: $backup_path"
-
-    # Backup dei dati Vault
-    if [ -d "$VAULT_DIR" ]; then
-        log INFO "Backing up Vault data..."
-        cp -r "$VAULT_DIR" "$backup_path/vault-data" || log ERROR "Failed to backup Vault data"
-
-        # Se il lab  in esecuzione, esporta anche i dati via API
-        if [ "$lab_running" = true ] && [ -f "$VAULT_DIR/root_token.txt" ]; then
-            log INFO "Exporting Vault configuration via API..."
-            export VAULT_ADDR="$VAULT_ADDR"
-
-            # Imposta VAULT_CACERT se TLS  abilitato
-            if [ "$ENABLE_TLS" = true ] && [ -f "$CA_CERT" ]; then
-                export VAULT_CACERT="$CA_CERT"
-            fi
-
-            export VAULT_TOKEN=$(cat "$VAULT_DIR/root_token.txt")
-            local vault_exe=$(get_vault_exe)
-
-            # Esporta policies
-            mkdir -p "$backup_path/api_export"
-            "$vault_exe" policy list -format=json > "$backup_path/api_export/policies_list.json" 2>/dev/null || true
-
-            # Esporta auth methods
-            "$vault_exe" auth list -format=json > "$backup_path/api_export/auth_methods.json" 2>/dev/null || true
-
-            # Esporta secrets engines
-            "$vault_exe" secrets list -format=json > "$backup_path/api_export/secrets_engines.json" 2>/dev/null || true
-
-            # Esporta alcune configurazioni specifiche (se esistono)
-            "$vault_exe" read -format=json auth/approle/role/web-application > "$backup_path/api_export/approle_config.json" 2>/dev/null || true
-        fi
-    fi
-
-    # Backup dei dati Consul (se presente)
-    if [ -d "$CONSUL_DIR" ] && [ "$BACKEND_TYPE" == "consul" ]; then
-        log INFO "Backing up Consul data..."
-        cp -r "$CONSUL_DIR" "$backup_path/consul-data" || log ERROR "Failed to backup Consul data"
-
-        # Se Consul  in esecuzione, esporta anche il KV store
-        if [ "$lab_running" = true ] && [ -f "$CONSUL_DIR/acl_master_token.txt" ]; then
-            log INFO "Exporting Consul KV store..."
-            export CONSUL_HTTP_TOKEN=$(cat "$CONSUL_DIR/acl_master_token.txt")
-
-            # Imposta CONSUL_CACERT se TLS  abilitato
-            if [ "$ENABLE_TLS" = true ] && [ -f "$CA_CERT" ]; then
-                export CONSUL_CACERT="$CA_CERT"
-            fi
-
-            local consul_exe=$(get_consul_exe)
-
-            mkdir -p "$backup_path/consul_export"
-            "$consul_exe" kv export > "$backup_path/consul_export/kv_export.json" 2>/dev/null || true
-        fi
-    fi
-
-    # Backup dei certificati TLS (se presente)
-    if [ "$ENABLE_TLS" = true ] && [ -d "$TLS_DIR" ]; then
-        log INFO "Backing up TLS certificates..."
-        cp -r "$TLS_DIR" "$backup_path/tls-data" || log ERROR "Failed to backup TLS data"
-    fi
-
-    # Backup della configurazione del lab
-    if [ -f "$LAB_CONFIG_FILE" ]; then
-        log INFO "Backing up lab configuration..."
-        cp "$LAB_CONFIG_FILE" "$backup_path/" || log ERROR "Failed to backup lab configuration"
-    fi
-
-    # Crea i metadati del backup
-    local metadata="{
-        \"backup_name\": \"$backup_name\",
-        \"description\": \"${backup_description:-""}\",
-        \"created_date\": \"$(date -Iseconds)\",
-        \"backend_type\": \"$BACKEND_TYPE\",
-        \"tls_enabled\": $ENABLE_TLS,
-        \"cluster_mode\": \"$CLUSTER_MODE\",
-        \"lab_was_running\": $lab_running,
-        \"vault_version\": \"$(get_vault_exe --version 2>/dev/null | head -n1 | awk '{print $2}' || echo "unknown")\",
-        \"consul_version\": \"$([ "$BACKEND_TYPE" == "consul" ] && get_consul_exe --version 2>/dev/null | head -n1 | awk '{print $2}' || echo "n/a")\",
-        \"script_version\": \"$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")\",
-        \"hostname\": \"$(hostname)\",
-        \"user\": \"$(whoami)\"
-    }"
-
-    echo "$metadata" | jq '.' > "$backup_path/$BACKUP_METADATA_FILE" 2>/dev/null || {
-        echo "$metadata" > "$backup_path/$BACKUP_METADATA_FILE"
-    }
-
-    # Calcola checksum per verifica integrit
-    log INFO "Calculating backup integrity checksum..."
-    find "$backup_path" -type f -exec sha256sum {} \; | sort > "$backup_path/checksums.sha256"
-
-    local backup_size=$(du -sh "$backup_path" | cut -f1)
-    log INFO "Backup '$backup_name' completed successfully! Size: $backup_size"
-    log INFO "Backup location: $backup_path"
-}
-
-restore_backup() {
-    local backup_name="$1"
-    local force_restore="$2"
-
-    if [ -z "$backup_name" ]; then
-        log ERROR "Backup name is required for restore operation."
-    fi
-
-    local backup_path="$BACKUP_DIR/$backup_name"
-
-    if [ ! -d "$backup_path" ]; then
-        log ERROR "Backup '$backup_name' not found in $BACKUP_DIR"
-    fi
-
-    local metadata_file="$backup_path/$BACKUP_METADATA_FILE"
-    if [ ! -f "$metadata_file" ]; then
-        log ERROR "Backup metadata not found. This might be a corrupted backup."
-    fi
-
-    # Verifica integrit del backup
-    log INFO "VERIFYING BACKUP INTEGRITY"
-    if [ -f "$backup_path/checksums.sha256" ]; then
-        if ! (cd "$backup_path" && sha256sum -c checksums.sha256 --quiet); then
-            log ERROR "Backup integrity check failed! The backup might be corrupted."
-        fi
-        log INFO "Backup integrity verified"
-    else
-        log WARN "No integrity checksums found. Proceeding without verification."
-    fi
-
-    # Leggi i metadati
-    local backup_backend=$(jq -r '.backend_type // "unknown"' "$metadata_file" 2>/dev/null)
-    local backup_tls=$(jq -r '.tls_enabled // false' "$metadata_file" 2>/dev/null)
-    local backup_cluster=$(jq -r '.cluster_mode // "single"' "$metadata_file" 2>/dev/null)
-    local backup_date=$(jq -r '.created_date // "unknown"' "$metadata_file" 2>/dev/null)
-    local backup_desc=$(jq -r '.description // ""' "$metadata_file" 2>/dev/null)
-
-    log INFO "RESTORING BACKUP: $backup_name"
-    log INFO "Created: $backup_date"
-    log INFO "Backend: $backup_backend"
-    log INFO "TLS: $([ "$backup_tls" = "true" ] && echo "enabled" || echo "disabled")"
-    log INFO "Cluster: $backup_cluster"
-    [ -n "$backup_desc" ] && log INFO "Description: $backup_desc"
-
-    # Controllo di sicurezza
-    if [ "$force_restore" != "--force" ]; then
-        echo -e "\n${YELLOW}WARNING: This will completely replace your current lab environment!${NC}"
-        echo -e "Current data will be ${RED}permanently lost${NC}."
-        read -p "Are you sure you want to continue? (yes/NO): " confirmation
-        if [[ ! "$confirmation" =~ ^[Yy][Ee][Ss]$ ]]; then
-            log INFO "Restore cancelled by user."
-            return 0
-        fi
-    fi
-
-    # Ferma il lab se  in esecuzione
-    log INFO "Stopping current lab environment..."
-    stop_lab_environment 2>/dev/null || true
-
-    # Pulisci l'ambiente corrente
-    log INFO "Cleaning current environment..."
-    rm -rf "$VAULT_DIR" "$CONSUL_DIR" "$TLS_DIR" "$LAB_CONFIG_FILE" 2>/dev/null || true
-
-    # Ripristina i dati
-    if [ -d "$backup_path/vault-data" ]; then
-        log INFO "Restoring Vault data..."
-        cp -r "$backup_path/vault-data" "$VAULT_DIR" || log ERROR "Failed to restore Vault data"
-    fi
-
-    if [ -d "$backup_path/consul-data" ]; then
-        log INFO "Restoring Consul data..."
-        cp -r "$backup_path/consul-data" "$CONSUL_DIR" || log ERROR "Failed to restore Consul data"
-    fi
-
-    if [ -d "$backup_path/tls-data" ]; then
-        log INFO "Restoring TLS certificates..."
-        cp -r "$backup_path/tls-data" "$TLS_DIR" || log ERROR "Failed to restore TLS data"
-    fi
-
-    if [ -f "$backup_path/$(basename "$LAB_CONFIG_FILE")" ]; then
-        log INFO "Restoring lab configuration..."
-        cp "$backup_path/$(basename "$LAB_CONFIG_FILE")" "$LAB_CONFIG_FILE" || log ERROR "Failed to restore lab configuration"
-    fi
-
-    # Aggiorna le variabili dalle configurazioni ripristinate
-    load_backend_type_from_config
-    [ -n "$ENABLE_TLS" ] && log INFO "Restored TLS setting: $ENABLE_TLS"
-
-    log INFO "Backup '$backup_name' restored successfully!"
-    log INFO "You can now start the lab with: $0 start"
-}
-
-delete_backup() {
-    local backup_name="$1"
-    local force_delete="$2"
-
-    if [ -z "$backup_name" ]; then
-        log ERROR "Backup name is required for delete operation."
-    fi
-
-    local backup_path="$BACKUP_DIR/$backup_name"
-
-    if [ ! -d "$backup_path" ]; then
-        log ERROR "Backup '$backup_name' not found in $BACKUP_DIR"
-    fi
-
-    # Mostra info del backup prima di eliminarlo
-    local metadata_file="$backup_path/$BACKUP_METADATA_FILE"
-    if [ -f "$metadata_file" ]; then
-        local backup_date=$(jq -r '.created_date // "unknown"' "$metadata_file" 2>/dev/null)
-        local backup_backend=$(jq -r '.backend_type // "unknown"' "$metadata_file" 2>/dev/null)
-        local backup_tls=$(jq -r '.tls_enabled // false' "$metadata_file" 2>/dev/null)
-        log INFO "Backup details - Date: $backup_date, Backend: $backup_backend, TLS: $backup_tls"
-    fi
-
-    # Controllo di sicurezza
-    if [ "$force_delete" != "--force" ]; then
-        echo -e "\n${YELLOW}WARNING: This will permanently delete backup '$backup_name'!${NC}"
-        read -p "Are you sure you want to continue? (yes/NO): " confirmation
-        if [[ ! "$confirmation" =~ ^[Yy][Ee][Ss]$ ]]; then
-            log INFO "Delete cancelled by user."
-            return 0
-        fi
-    fi
-
-    log INFO "Deleting backup '$backup_name'..."
-    rm -rf "$backup_path" || log ERROR "Failed to delete backup"
-    log INFO "Backup '$backup_name' deleted successfully!"
-}
-
-export_backup() {
-    local backup_name="$1"
-    local export_path="$2"
-
-    if [ -z "$backup_name" ]; then
-        log ERROR "Backup name is required for export operation."
-    fi
-
-    local backup_path="$BACKUP_DIR/$backup_name"
-
-    if [ ! -d "$backup_path" ]; then
-        log ERROR "Backup '$backup_name' not found in $BACKUP_DIR"
-    fi
-
-    # Se non specificato, usa la directory corrente
-    if [ -z "$export_path" ]; then
-        export_path="./$(basename "$backup_name").tar.gz"
-    fi
-
-    log INFO "Exporting backup '$backup_name' to '$export_path'..."
-
-    # Crea un archivio compresso
-    tar -czf "$export_path" -C "$BACKUP_DIR" "$backup_name" || log ERROR "Failed to create export archive"
-
-    local export_size=$(du -sh "$export_path" | cut -f1)
-    log INFO "Backup exported successfully! Size: $export_size"
-    log INFO "Export location: $export_path"
-}
-
-import_backup() {
-    local import_path="$1"
-    local backup_name="$2"
-
-    if [ -z "$import_path" ]; then
-        log ERROR "Import file path is required."
-    fi
-
-    if [ ! -f "$import_path" ]; then
-        log ERROR "Import file '$import_path' not found."
-    fi
-
-    # Se non specificato, estrai il nome dal file
-    if [ -z "$backup_name" ]; then
-        backup_name=$(basename "$import_path" .tar.gz)
-    fi
-
-    local backup_path="$BACKUP_DIR/$backup_name"
-
-    if [ -d "$backup_path" ]; then
-        log ERROR "Backup '$backup_name' already exists. Delete it first or choose a different name."
-    fi
-
-    log INFO "Importing backup from '$import_path' as '$backup_name'..."
-
-    # Crea la directory di backup se non esiste
-    mkdir -p "$BACKUP_DIR" || log ERROR "Failed to create backup directory"
-
-    # Estrai l'archivio
-    tar -xzf "$import_path" -C "$BACKUP_DIR" || log ERROR "Failed to extract import archive"
-
-    # Se necessario, rinomina la directory estratta
-    local extracted_name=$(tar -tzf "$import_path" | head -1 | cut -d/ -f1)
-    if [ "$extracted_name" != "$backup_name" ]; then
-        mv "$BACKUP_DIR/$extracted_name" "$backup_path" || log ERROR "Failed to rename imported backup"
-    fi
-
-    log INFO "Backup imported successfully!"
-    log INFO "You can now restore it with: $0 restore $backup_name"
-}
 
 display_help() {
     cat <<'EOF'
@@ -1443,17 +1077,28 @@ Usage:
 
 Deploy a local HashiCorp Vault lab environment with optional Consul backend.
 
+MODES:
+  CI/CD Mode (default for 'start')
+    Runs automatically with: ephemeral, single node, file backend, TLS enabled
+    Usage: ./vault-lab-ctl.sh start
+
+  Interactive Mode (legacy)
+    Prompts for cluster mode, backend, and TLS settings
+    Usage: ./vault-lab-ctl.sh --interactive start
+
 Options:
-  -c, --clean                   Force clean setup before start
-  -h, --help                    Show this help and exit
-  -v, --verbose                 Verbose output
-      --no-color                Disable colored output
-      --backend <file|consul>   Storage backend (default: file)
-      --cluster <single|multi>  Cluster mode (default: single)
-      --tls                     Enable TLS/SSL encryption
+  -c, --clean                      Force clean setup before start
+  -h, --help                       Show this help and exit
+  -v, --verbose                    Verbose output
+      --no-color                   Disable colored output
+      --backend <file|consul>      Storage backend (default: file)
+      --cluster <single|multi>     Cluster mode (default: single)
+      --tls                        Enable TLS/SSL encryption
+      --ephemeral                  Run in ephemeral mode (temp directories)
+      --interactive                Enable interactive prompts (use with --cluster/--backend)
 
 Commands:
-  start        Start the lab (default if no command is given)
+  start        Start the lab (uses CI/CD mode by default)
   stop         Stop Vault/Consul processes
   restart      Restart the lab and unseal Vault
   reset        Clean and start from scratch
@@ -1461,19 +1106,20 @@ Commands:
   cleanup      Remove all lab data and configs
   shell        Drop into an interactive shell with env set
 
-Backup/Restore:
-  backup [name] [description]       Create a backup of the current lab state
-  restore <name> [--force]          Restore from a backup
-  list-backups                      List all available backups
-  delete-backup <name> [--force]    Delete a specific backup
-  export-backup <name> [path]       Export a backup as a tar.gz file
-  import-backup <path> [name]       Import a backup from a tar.gz file
-
 Examples:
-  ./vault-lab-ctl.sh --tls start
-  ./vault-lab-ctl.sh --cluster multi --backend consul start
-  ./vault-lab-ctl.sh backup my-config "Working KV setup"
-  ./vault-lab-ctl.sh restore my-config
+  CI/CD Mode (automatic defaults):
+    ./vault-lab-ctl.sh start
+
+  Interactive Mode (with prompts):
+    ./vault-lab-ctl.sh --interactive start
+
+  Custom CI/CD configuration:
+    ./vault-lab-ctl.sh --tls --cluster multi --backend consul start
+
+  Management commands:
+    ./vault-lab-ctl.sh stop
+    ./vault-lab-ctl.sh status
+    ./vault-lab-ctl.sh reset
 EOF
     exit 0
 }
@@ -1689,6 +1335,10 @@ restart_lab_environment() {
     stop_lab_environment
     sleep 3
 
+    # Recreate all required directories after stopping (same as start_lab_environment_core)
+    mkdir -p "$VAULT_DIR" "$CONSUL_DIR" "$TLS_DIR" "$CERTS_DIR" "$CA_DIR" || \
+        log ERROR "Failed to create base directories"
+
     if [ "$BACKEND_TYPE" == "consul" ]; then
         if [ "$ENABLE_TLS" = true ]; then
             configure_consul_with_tls
@@ -1790,9 +1440,9 @@ load_plugins() {
 
     local count=0
 
-    # Cerca *.sh, ignorando il caso di "nessun file"
+    # Search *.sh, ignoring "no files" case
     for plugin in "$PLUGIN_DIR"/*.sh; do
-        # Se il glob non ha trovato nulla, lascia il literal '*.sh'
+        # If glob found nothing, lascia il literal '*.sh'
         if [[ "$plugin" == "$PLUGIN_DIR/*.sh" ]]; then
             break
         fi
@@ -1814,7 +1464,7 @@ load_plugins() {
 # --- Hook executor ---
 run_hook() {
     local hook_name="$1"
-    # Se la funzione non esiste, ignora
+    # If function does not exist, ignore
     if declare -F "$hook_name" >/dev/null; then
         log INFO "Executing hook: $hook_name"
         "$hook_name"
@@ -1822,16 +1472,17 @@ run_hook() {
 }
 
 parse_args() {
-    # reset variabili globali
+    # reset global variables
     FORCE_CLEANUP_ON_START=false
     VERBOSE_OUTPUT=false
     COLORS_ENABLED=true
     TLS_ENABLED_FROM_ARG=false
     BACKEND_TYPE_SET_VIA_ARG=false
+    INTERACTIVE_MODE=false
     COMMAND=""
     REMAINING_ARGS=()
 
-    # parse con getopts (gestione di opzioni lunghe con '-:')
+    # parse with getopts (gestione di opzioni lunghe con '-:')
     while getopts ":chv-:" opt; do
         case $opt in
             c) FORCE_CLEANUP_ON_START=true ;;
@@ -1844,6 +1495,7 @@ parse_args() {
                     cluster)  CLUSTER_MODE="$2"; shift ;;
                     tls)      ENABLE_TLS=true; TLS_ENABLED_FROM_ARG=true ;;
                     ephemeral) EPHEMERAL_MODE=true ;;
+                    interactive) INTERACTIVE_MODE=true ;;
                     help)     display_help ;;
                     *) log ERROR "Unknown option --${OPTARG}" ;;
                 esac
@@ -1853,7 +1505,7 @@ parse_args() {
     done
     shift $((OPTIND-1))
 
-    # primo argomento dopo le opzioni  il comando
+    # first argument after options  il comando
     COMMAND="${1:-start}"
     shift || true
     REMAINING_ARGS=("$@")
@@ -1874,11 +1526,23 @@ main() {
     # Load plugins BEFORE executing any command
     load_plugins
 
-    # prompt interattivi (cluster/backend/tls) solo per start/reset
-    if [[ "$COMMAND" =~ ^(start|reset)$ ]]; then
+    # Interactive prompts (cluster/backend/tls) only for start/reset/restart
+    if [[ "$COMMAND" =~ ^(start|reset|restart)$ ]]; then
 
-        if [ "$EPHEMERAL_MODE" = true ]; then
-            # Modalità zero-interazione
+        if [ "$INTERACTIVE_MODE" = false ]; then
+            # CI/CD Mode: automatic default without prompts
+            EPHEMERAL_MODE=true
+            CLUSTER_MODE="single"
+            BACKEND_TYPE="file"
+            ENABLE_TLS=true
+
+            echo -e "${YELLOW}CI/CD Mode active: ephemeral, single node, file backend, TLS enabled.${NC}"
+            echo -e "Using cluster mode: ${GREEN}$CLUSTER_MODE${NC}"
+            echo -e "Using backend: ${GREEN}$BACKEND_TYPE${NC}"
+            echo -e "TLS encryption: ${GREEN}enabled${NC}"
+
+        elif [ "$EPHEMERAL_MODE" = true ]; then
+            # Explicit zero-interaction mode (--ephemeral)
             CLUSTER_MODE="single"
             BACKEND_TYPE="file"
             ENABLE_TLS=false
@@ -1889,7 +1553,7 @@ main() {
             echo -e "TLS encryption: ${GREEN}disabled${NC}"
 
         else
-            # ---------- QUI TUTTI I PROMPT NORMALI ----------
+            # ---------- HERE ALL NORMAL PROMPTS (--interactive) ----------
             if [[ ! "$CLUSTER_MODE" =~ ^(single|multi)$ ]]; then
                 echo -e "\n${YELLOW}Cluster mode (single/multi) [single]:${NC}"
                 read -r cchoice
@@ -1920,20 +1584,20 @@ main() {
                 VAULT_ADDR="https://127.0.0.1:8200"
                 CONSUL_ADDR="https://127.0.0.1:8500"
             }
-            # ---------- FINE PROMPT ----------
+            # ---------- END PROMPT ----------
         fi
     fi
 
-    # Reimposta le directory runtime dopo i prompt
+    # Reset runtime directories after prompts
     if [ "$EPHEMERAL_MODE" = true ]; then
-        # directory effimera per tutto il lab
+        # ephemeral directory for entire lab
         RUNTIME_DIR=$(mktemp -d -t vault-lab-XXXXXXXXXX)
 
         VAULT_DIR="$RUNTIME_DIR/vault"
         CONSUL_DIR="$RUNTIME_DIR/consul"
         TLS_DIR="$RUNTIME_DIR/tls"
 
-        # derivati TLS
+        # TLS derivatives
         CA_DIR="$TLS_DIR/ca"
         CERTS_DIR="$TLS_DIR/certs"
         CA_KEY="$CA_DIR/ca-key.pem"
@@ -1941,7 +1605,7 @@ main() {
         CA_CONFIG="$CA_DIR/ca-config.json"
         CA_CSR="$CA_DIR/ca-csr.json"
 
-        # pid file dentro le dir effimere
+        # pid file in ephemeral directories
         LAB_VAULT_PID_FILE="$VAULT_DIR/vault.pid"
         LAB_CONSUL_PID_FILE="$CONSUL_DIR/consul.pid"
 
@@ -1952,7 +1616,7 @@ main() {
     fi
 
 
-    # esecuzione comando
+    # command execution
     case "$COMMAND" in
         start)   $FORCE_CLEANUP_ON_START && cleanup_previous_environment; start_lab_environment_core ;;
         stop)    stop_lab_environment ;;
@@ -1967,12 +1631,6 @@ main() {
             echo " Lab shell active. Type 'exit' to leave."
             exec "${SHELL:-bash}" -i
             ;;
-        backup)         create_backup "${REMAINING_ARGS[0]}" "${REMAINING_ARGS[1]}" ;;
-        restore)        restore_backup "${REMAINING_ARGS[0]}" "${REMAINING_ARGS[1]}" ;;
-        list-backups)   list_backups ;;
-        delete-backup)  delete_backup "${REMAINING_ARGS[0]}" "${REMAINING_ARGS[1]}" ;;
-        export-backup)  export_backup "${REMAINING_ARGS[0]}" "${REMAINING_ARGS[1]}" ;;
-        import-backup)  import_backup "${REMAINING_ARGS[0]}" "${REMAINING_ARGS[1]}" ;;
         *) log ERROR "Invalid command '$COMMAND'." ;;
     esac
 }
