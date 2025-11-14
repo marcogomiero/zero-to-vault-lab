@@ -53,16 +53,6 @@ This will run with: ephemeral mode, single-node, file backend, TLS enabled.
 
 Get prompted for cluster mode, backend type, and TLS settings.
 
-**Quick presets**
-
-Start with Ephemeral mode (single node, file backend, no TLS):
-
-`./vault-lab-ctl.sh --ephemeral start`
-
-Start with TLS enabled (requires --interactive for other options):
-
-`./vault-lab-ctl.sh --tls --interactive start`
-
 Multi-node cluster with Consul:
 
 `./vault-lab-ctl.sh --cluster multi --backend consul --interactive start`
