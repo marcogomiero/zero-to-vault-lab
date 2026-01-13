@@ -1,6 +1,5 @@
 #!/bin/bash
 
-
 # Allow environment override, default latest
 VAULT_VERSION="${VAULT_VERSION:-latest}"
 CONSUL_VERSION="${CONSUL_VERSION:-latest}"
@@ -16,6 +15,9 @@ LAB_VAULT_PID_FILE="$VAULT_DIR/vault.pid"
 LAB_CONSUL_PID_FILE="$CONSUL_DIR/consul.pid"
 LAB_CONFIG_FILE="$SCRIPT_DIR/vault-lab-ctl.conf"
 AUDIT_LOG_PATH="/dev/null"
+
+# Pointer file to reuse ephemeral runtime across commands (status/stop/shell)
+RUNTIME_POINTER_FILE="$SCRIPT_DIR/.vault-lab-runtime"
 
 CLUSTER_MODE=""
 ENABLE_TLS=false
@@ -40,6 +42,14 @@ INTERACTIVE_MODE=false
 RUNTIME_DIR=""
 ROOT_TOKEN=""
 UNSEAL_KEY=""
+
+# --- Colors ---
+COLORS_ENABLED=true
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
 
 is_windows() {
     case "$(uname -s)" in
@@ -66,7 +76,11 @@ log() {
         WARN)  color=$YELLOW ;;
         ERROR) color=$RED ;;
     esac
-    echo -e "${color}[${level}]${NC} $*" >&2
+    if [ "$COLORS_ENABLED" = true ]; then
+      echo -e "${color}[${level}]${NC} $*" >&2
+    else
+      echo "[${level}] $*" >&2
+    fi
     [ "$level" = "ERROR" ] && exit 1
 }
 
@@ -373,7 +387,6 @@ EOF
 }
 
 start_consul_with_tls()        { start_consul_tls; }
-
 start_consul_with_tls_no_acl() { start_consul_tls --no-acl; }
 
 get_vault_exe() { get_exe "vault"; }
@@ -402,14 +415,12 @@ wait_for_vault_ready() {
     log INFO "Waiting for Vault to be fully ready..."
 
     while [ $attempt -le $max_attempts ]; do
-        # Try a simple API call instead of JSON status
         if [ "$ENABLE_TLS" = true ]; then
             local response=$(curl -s -w "%{http_code}" -o /dev/null --cacert "$CA_CERT" -H "X-Vault-Token: $(cat "$VAULT_DIR/root_token.txt")" "$VAULT_ADDR/v1/sys/health" 2>/dev/null || echo "000")
         else
             local response=$(curl -s -w "%{http_code}" -o /dev/null -H "X-Vault-Token: $(cat "$VAULT_DIR/root_token.txt")" "$VAULT_ADDR/v1/sys/health" 2>/dev/null || echo "000")
         fi
 
-        # Vault health check returns 200 if unsealed and ready
         if [ "$response" = "200" ]; then
             log INFO "Vault is ready after $attempt attempts."
             return 0
@@ -421,7 +432,7 @@ wait_for_vault_ready() {
     done
 
     log WARN "Vault readiness check timed out after $max_attempts attempts, proceeding anyway..."
-    return 0  # Don't block the process, proceed anyway
+    return 0
 }
 
 stop_vault() {
@@ -440,7 +451,6 @@ stop_vault() {
 
 get_vault_status() {
     local vault_exe=$(get_vault_exe)
-    # Ensure environment variables are set correctly
     if [ "$ENABLE_TLS" = true ]; then
         VAULT_ADDR="$VAULT_ADDR" VAULT_CACERT="$CA_CERT" "$vault_exe" status -format=json 2>/dev/null
     else
@@ -482,8 +492,6 @@ EOF
 start_vault_with_tls() {
     log INFO "Starting Vault server with TLS in background..."
     local vault_exe=$(get_vault_exe)
-
-    # Set environment variables for TLS
     export VAULT_CACERT="$CA_CERT"
 
     "$vault_exe" server -config="$VAULT_DIR/config.hcl" > "$VAULT_DIR/vault.log" 2>&1 &
@@ -530,7 +538,6 @@ start_vault_nodes_with_tls() {
         local node_dir="$VAULT_DIR/node_$i"
         mkdir -p "$node_dir"
 
-        # Generate certificate for this node
         generate_vault_certificate "vault-node$i" "127.0.0.1"
 
         cat > "$node_dir/config.hcl" <<EOF
@@ -556,13 +563,10 @@ EOF
         VAULT_CACERT="$CA_CERT" "$vault_exe" server -config="$node_dir/config.hcl" > "$node_dir/vault.log" 2>&1 &
         echo $! >> "$VAULT_DIR/vault_pids"
         log INFO "Vault node $i started on port $port with TLS"
-
-        # Wait for this node to start
         export VAULT_CACERT="$CA_CERT"
         wait_for_vault_up "https://127.0.0.1:$port"
     done
 
-    # Update VAULT_ADDR for the first node
     VAULT_ADDR="https://127.0.0.1:8200"
     export VAULT_CACERT="$CA_CERT"
     export VAULT_ADDR="$VAULT_ADDR"
@@ -571,7 +575,6 @@ EOF
 initialize_and_unseal_vault() {
     log INFO "INITIALIZING AND UNSEALING VAULT"
 
-    # Set environment variables for TLS se abilitato
     if [ "$ENABLE_TLS" = true ]; then
         export VAULT_CACERT="$CA_CERT"
     fi
@@ -593,7 +596,6 @@ initialize_and_unseal_vault() {
         log WARN "INSECURE: Credentials are saved in plain text in $VAULT_DIR."
     fi
 
-    # Re-check status after initialization
     status_json=$(get_vault_status)
     if [ "$(echo "$status_json" | jq -r '.sealed')" == "true" ]; then
         log INFO "Vault is sealed. Unsealing..."
@@ -614,10 +616,8 @@ initialize_and_unseal_vault() {
             log INFO "Vault unsealed successfully."
         fi
 
-        # Wait for stabilization
         sleep 5
 
-        # Verify status again
         status_json=$(get_vault_status)
         if [ "$(echo "$status_json" | jq -r '.sealed')" == "true" ]; then
             log ERROR "Vault is still sealed after unseal operation. Check logs."
@@ -629,10 +629,7 @@ initialize_and_unseal_vault() {
     wait_for_unseal_ready "$VAULT_ADDR"
     export VAULT_TOKEN=$(cat "$VAULT_DIR/root_token.txt")
 
-    # Attendi che Vault sia completamente pronto
     wait_for_vault_ready
-
-    # Debug: mostra status finale
     local final_status=$(get_vault_status)
     log DEBUG "Final Vault status: sealed=$(echo "$final_status" | jq -r '.sealed'), initialized=$(echo "$final_status" | jq -r '.initialized')"
 }
@@ -640,14 +637,12 @@ initialize_and_unseal_vault() {
 configure_vault_features() {
     log INFO "CONFIGURING COMMON VAULT FEATURES"
 
-    # Verifica che Vault sia unsealed prima di procedere
     local status_json=$(get_vault_status)
     if [ "$(echo "$status_json" | jq -r '.sealed')" == "true" ]; then
         log ERROR "Cannot configure Vault features: Vault is sealed!"
         return 1
     fi
 
-    # Assicurati che le variabili ambiente siano impostate
     if [ "$ENABLE_TLS" = true ]; then
         export VAULT_CACERT="$CA_CERT"
     fi
@@ -710,10 +705,6 @@ configure_vault_features() {
     log INFO " - Writing test secret to secret/test-secret"
     "$vault_exe" kv put secret/test-secret message="Hello from Vault!" username="testuser" &>/dev/null || log WARN "Failed to write test secret"
 
-    # ------------------------------------------------------------------
-    # --- NEW DEMO ENGINES ---------------------------------------------
-    # ------------------------------------------------------------------
-
     # --- Transit engine demo ---
     log INFO " - Enabling Transit secrets engine for encryption-as-a-service"
     "$vault_exe" secrets enable transit &>/dev/null || log WARN "Failed to enable transit engine"
@@ -722,15 +713,12 @@ configure_vault_features() {
 
     # --- Database secrets engine (mock/demo only) ---
     log INFO " - Enabling Database secrets engine (no backend configured)"
-    "$vault_exe" secrets enable database &>/dev/null \
-    || log WARN "Could not enable database engine"
+    "$vault_exe" secrets enable database &>/dev/null || log WARN "Could not enable database engine"
     log INFO "   Database engine configured"
 }
 
 # --- TLS Management Functions ---
-
 check_tls_prerequisites() {
-    # Usa OpenSSL che  universalmente disponibile
     if ! command -v openssl &> /dev/null; then
         log ERROR "OpenSSL is required but not found. Please install OpenSSL."
     fi
@@ -741,7 +729,6 @@ generate_ca_certificate() {
     log INFO "Generating Certificate Authority (CA) with OpenSSL..."
     mkdir -p "$CA_DIR"
 
-    # Genera CA se non esiste
     if [ ! -f "$CA_CERT" ] || [ ! -f "$CA_KEY" ]; then
         log INFO "Creating CA private key..."
         openssl genrsa -out "$CA_KEY" 2048 || log ERROR "Failed to generate CA private key"
@@ -756,7 +743,6 @@ generate_ca_certificate() {
         log INFO "CA certificate already exists, reusing."
     fi
 
-    # Verify CA files exist
     if [ ! -f "$CA_CERT" ] || [ ! -f "$CA_KEY" ]; then
         log ERROR "CA certificate or key missing after generation"
     fi
@@ -775,15 +761,12 @@ generate_vault_certificate() {
     local csr_file="$CERTS_DIR/${node_name}.csr"
 
     if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
-        # Generate private key
         openssl genrsa -out "$key_file" 2048 || log ERROR "Failed to generate private key for $node_name"
 
-        # Create CSR
         openssl req -new -key "$key_file" -out "$csr_file" \
             -subj "/C=IT/ST=Virtual/L=Lab/O=Vault Lab/CN=$node_name" \
             || log ERROR "Failed to generate CSR for $node_name"
 
-        # Create config for Subject Alternative Names
         local san_config="$CERTS_DIR/${node_name}.conf"
         cat > "$san_config" <<EOF
 [req]
@@ -802,27 +785,22 @@ IP.1 = 127.0.0.1
 IP.2 = $node_ip
 EOF
 
-        # Aggiungi SAN aggiuntivi se specificati
         if [ -n "$additional_sans" ]; then
             echo "# Additional SANs" >> "$san_config"
             echo "$additional_sans" >> "$san_config"
         fi
 
-        # Genera certificato firmato dalla CA
         openssl x509 -req -in "$csr_file" -CA "$CA_CERT" -CAkey "$CA_KEY" \
             -CAcreateserial -out "$cert_file" -days 365 \
             -extensions v3_req -extfile "$san_config" \
             || log ERROR "Failed to generate certificate for $node_name"
 
-        # Cleanup
         rm -f "$csr_file" "$san_config"
-
         log INFO "Vault certificate generated: $cert_file"
     else
         log INFO "Vault certificate already exists for $node_name, reusing."
     fi
 
-    # Restituisci i percorsi dei file
     echo "CERT_FILE=$cert_file"
     echo "KEY_FILE=$key_file"
 }
@@ -839,15 +817,12 @@ generate_consul_certificate() {
     local csr_file="$CERTS_DIR/${node_name}.csr"
 
     if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
-        # Generate private key
         openssl genrsa -out "$key_file" 2048 || log ERROR "Failed to generate private key for $node_name"
 
-        # Create CSR
         openssl req -new -key "$key_file" -out "$csr_file" \
             -subj "/C=IT/ST=Virtual/L=Lab/O=Vault Lab/CN=$node_name" \
             || log ERROR "Failed to generate CSR for $node_name"
 
-        # Crea config per SAN
         cat > "$CERTS_DIR/${node_name}.conf" <<EOF
 [req]
 distinguished_name = req_distinguished_name
@@ -865,15 +840,12 @@ IP.1 = 127.0.0.1
 IP.2 = $node_ip
 EOF
 
-        # Genera certificato firmato dalla CA
         openssl x509 -req -in "$csr_file" -CA "$CA_CERT" -CAkey "$CA_KEY" \
             -CAcreateserial -out "$cert_file" -days 365 \
             -extensions v3_req -extfile "$CERTS_DIR/${node_name}.conf" \
             || log ERROR "Failed to generate certificate for $node_name"
 
-        # Cleanup
         rm -f "$csr_file" "$CERTS_DIR/${node_name}.conf"
-
         log INFO "Consul certificate generated: $cert_file"
     else
         log INFO "Consul certificate already exists for $node_name, reusing."
@@ -889,7 +861,6 @@ setup_tls_infrastructure() {
     check_tls_prerequisites
     generate_ca_certificate
 
-    # Genera certificati per Vault
     if [ "$CLUSTER_MODE" = "multi" ]; then
         for i in 1 2 3; do
             generate_vault_certificate "vault-node$i" "127.0.0.1"
@@ -898,70 +869,12 @@ setup_tls_infrastructure() {
         generate_vault_certificate "vault-server" "127.0.0.1"
     fi
 
-    # Genera certificati per Consul se necessario
     if [ "$BACKEND_TYPE" == "consul" ]; then
         generate_consul_certificate "consul-server" "127.0.0.1"
     fi
 
     log INFO "TLS infrastructure setup completed."
 }
-
-verify_certificate() {
-    local cert_file="$1"
-    local service_name="$2"
-
-    if [ ! -f "$cert_file" ]; then
-        log ERROR "Certificate file not found: $cert_file"
-        return 1
-    fi
-
-    log INFO "Verifying certificate for $service_name..."
-
-    # Verifica validit del certificato
-    if ! openssl x509 -in "$cert_file" -text -noout >/dev/null 2>&1; then
-        log ERROR "Invalid certificate format: $cert_file"
-        return 1
-    fi
-
-    # Verifica data di scadenza
-    local expiry_date=$(openssl x509 -in "$cert_file" -enddate -noout | cut -d= -f2)
-    local expiry_epoch=$(date -d "$expiry_date" +%s 2>/dev/null || date -j -f "%b %d %H:%M:%S %Y %Z" "$expiry_date" +%s 2>/dev/null || echo "0")
-    local current_epoch=$(date +%s)
-
-    if [ "$expiry_epoch" -le "$current_epoch" ]; then
-        log WARN "Certificate for $service_name has expired or expires soon: $expiry_date"
-        return 1
-    fi
-
-    local days_until_expiry=$(( (expiry_epoch - current_epoch) / 86400 ))
-    log INFO "Certificate for $service_name is valid for $days_until_expiry more days."
-
-    return 0
-}
-
-cleanup_expired_certificates() {
-    log INFO "Checking for expired certificates..."
-
-    local expired_found=false
-    for cert_file in "$CERTS_DIR"/*.pem; do
-        if [ -f "$cert_file" ] && [[ "$cert_file" != *"-key.pem" ]]; then
-            local service_name=$(basename "$cert_file" .pem)
-            if ! verify_certificate "$cert_file" "$service_name"; then
-                log INFO "Removing expired certificate: $cert_file"
-                rm -f "$cert_file" "${cert_file%-*}-key.pem"
-                expired_found=true
-            fi
-        fi
-    done
-
-    if [ "$expired_found" = true ]; then
-        log INFO "Expired certificates removed. Run setup again to regenerate."
-    else
-        log INFO "No expired certificates found."
-    fi
-}
-
-# --- Integration functions to modify existing Vault/Consul configs ---
 
 configure_vault_with_tls() {
     local node_name="vault-server"
@@ -1000,7 +913,6 @@ cluster_addr = "https://127.0.0.1:$cluster_port"
 ui = true
 EOF
 
-    # Aggiorna le variabili globali per usare HTTPS
     VAULT_ADDR="https://127.0.0.1:$port"
     export VAULT_CACERT="$CA_CERT"
     export VAULT_ADDR="$VAULT_ADDR"
@@ -1015,13 +927,8 @@ data_dir = "$CONSUL_DIR/data"
 server = true
 bootstrap_expect = 1
 client_addr = "0.0.0.0"
-ui_config {
-  enabled = true
-}
-ports {
-    http = -1
-    https = 8500
-}
+ui_config { enabled = true }
+ports { http = -1 https = 8500 }
 ca_file = "$CA_CERT"
 cert_file = "$CERTS_DIR/consul-server.pem"
 key_file = "$CERTS_DIR/consul-server-key.pem"
@@ -1035,40 +942,9 @@ acl = {
 }
 EOF
 
-    # Aggiorna CONSUL_ADDR per usare HTTPS
     CONSUL_ADDR="https://127.0.0.1:8500"
     export CONSUL_CACERT="$CA_CERT"
 }
-
-configure_consul_with_tls_simple() {
-    setup_tls_infrastructure
-
-    cat > "$CONSUL_DIR/consul_config.hcl" <<EOF
-datacenter = "dc1"
-data_dir = "$CONSUL_DIR/data"
-server = true
-bootstrap_expect = 1
-client_addr = "0.0.0.0"
-ui_config {
-  enabled = true
-}
-ports {
-    https = 8500
-}
-ca_file = "$CA_CERT"
-cert_file = "$CERTS_DIR/consul-server.pem"
-key_file = "$CERTS_DIR/consul-server-key.pem"
-acl = {
-  enabled = true
-  default_policy = "deny"
-  enable_token_persistence = true
-}
-EOF
-
-    CONSUL_ADDR="https://127.0.0.1:8500"
-    export CONSUL_CACERT="$CA_CERT"
-}
-
 
 display_help() {
     cat <<'EOF'
@@ -1079,7 +955,7 @@ Deploy a local HashiCorp Vault lab environment with optional Consul backend.
 
 MODES:
   CI/CD Mode (default for 'start')
-    Runs automatically with: ephemeral, single node, file backend, TLS enabled
+    Runs automatically with: ephemeral, single node, file backend, NO TLS (plain HTTP)
     Usage: ./vault-lab-ctl.sh start
 
   Interactive Mode (legacy)
@@ -1113,7 +989,7 @@ Examples:
   Interactive Mode (with prompts):
     ./vault-lab-ctl.sh --interactive start
 
-  Custom CI/CD configuration:
+  Custom configuration:
     ./vault-lab-ctl.sh --tls --cluster multi --backend consul start
 
   Management commands:
@@ -1137,7 +1013,6 @@ load_backend_type_from_config() {
         [ -n "$CLUSTER_MODE" ] && log INFO "Loaded cluster mode from config: $CLUSTER_MODE"
         [ -n "$ENABLE_TLS" ] && log INFO "Loaded TLS mode from config: $ENABLE_TLS"
 
-        # Aggiorna VAULT_ADDR e CONSUL_ADDR se TLS  abilitato
         if [ "$ENABLE_TLS" = true ]; then
             VAULT_ADDR="https://127.0.0.1:8200"
             CONSUL_ADDR="https://127.0.0.1:8500"
@@ -1151,38 +1026,41 @@ stop_lab_environment() {
     if [ "$BACKEND_TYPE" == "consul" ]; then
         stop_consul
     fi
+    rm -f "$RUNTIME_POINTER_FILE"
     log INFO "Vault lab environment stopped. "
 }
 
 cleanup_previous_environment() {
     log INFO "FULL CLEANUP OF PREVIOUS LAB ENVIRONMENT"
 
-    # Stop Consul if running
     if [ -f "$CONSUL_DIR/consul.pid" ]; then
         log INFO "Stopping Consul server..."
         kill "$(cat "$CONSUL_DIR/consul.pid")" 2>/dev/null || true
         rm -f "$CONSUL_DIR/consul.pid"
     fi
 
-    # Stop all Vault nodes
     if [ -d "$VAULT_DIR" ]; then
         log INFO "Stopping Vault server(s)..."
-        # kill any pid files in vault-data and its subdirectories
         find "$VAULT_DIR" -name 'vault.pid' -print | while read -r pidfile; do
             kill "$(cat "$pidfile")" 2>/dev/null || true
             rm -f "$pidfile"
         done
-        # safety net: kill any leftover vault server processes
         pkill -f 'vault server' 2>/dev/null || true
     fi
 
     log INFO "Deleting previous working directories..."
     rm -rf "$VAULT_DIR" "$CONSUL_DIR" "$CERTS_DIR"
+    rm -f "$RUNTIME_POINTER_FILE"
     log INFO "Cleanup completed."
 }
 
 check_lab_status() {
     log INFO "CHECKING VAULT LAB STATUS (Backend: $BACKEND_TYPE)"
+
+    local protocol="http"
+    [ "$ENABLE_TLS" = true ] && protocol="https"
+    local ui_addr="${protocol}://127.0.0.1:8200"
+
     local vault_running=false
     if [ -f "$LAB_VAULT_PID_FILE" ] && ps -p "$(cat "$LAB_VAULT_PID_FILE")" > /dev/null; then
         vault_running=true
@@ -1191,27 +1069,47 @@ check_lab_status() {
     if [ "$vault_running" = true ]; then
         log INFO "Vault process is RUNNING. PID: $(cat "$LAB_VAULT_PID_FILE")"
 
-        # Imposta le variabili necessarie per il controllo dello stato
-        if [ "$ENABLE_TLS" = true ]; then
-            export VAULT_CACERT="$CA_CERT"
-        fi
-        export VAULT_ADDR="$VAULT_ADDR"
+        export VAULT_ADDR="$ui_addr"
+        [ "$ENABLE_TLS" = true ] && export VAULT_CACERT="$CA_CERT"
 
-        local status_json=$(get_vault_status)
-        if [ "$(echo "$status_json" | jq -r '.sealed')" == "false" ]; then
-            log INFO "Vault is UNSEALED and READY. "
+        local status_json
+        status_json=$(get_vault_status 2>/dev/null || true)
+
+        if [ -n "$status_json" ]; then
+            local sealed initialized version
+            sealed=$(echo "$status_json" | jq -r '.sealed' 2>/dev/null)
+            initialized=$(echo "$status_json" | jq -r '.initialized' 2>/dev/null)
+            version=$(echo "$status_json" | jq -r '.version' 2>/dev/null)
+
+            log INFO "Vault version:    ${version:-unknown}"
+            log INFO "Vault initialized: ${initialized:-unknown}"
+            log INFO "Vault sealed:      ${sealed:-unknown}"
         else
-            log WARN "Vault is SEALED.  Run 'restart' to unseal."
+            log WARN "Unable to query Vault API status (Vault starting? wrong address?)"
         fi
+
+        if [ -f "$VAULT_DIR/root_token.txt" ]; then
+            log INFO "Root token: PRESENT"
+        else
+            log WARN "Root token: NOT FOUND"
+        fi
+
+        echo
+        echo "--- ACCESS INFO ---"
+        echo " Vault UI:   $ui_addr"
+        echo " VAULT_ADDR: $ui_addr"
+        [ "$ENABLE_TLS" = true ] && echo " VAULT_CACERT: $CA_CERT"
+
     else
-        log INFO "Vault server is NOT RUNNING. "
+        log INFO "Vault server is NOT RUNNING."
     fi
 
     if [ "$BACKEND_TYPE" == "consul" ]; then
         if [ -f "$LAB_CONSUL_PID_FILE" ] && ps -p "$(cat "$LAB_CONSUL_PID_FILE")" > /dev/null; then
             log INFO "Consul process is RUNNING. PID: $(cat "$LAB_CONSUL_PID_FILE")"
+            echo " Consul UI: ${protocol}://$(get_host_accessible_ip):8500"
         else
-            log INFO "Consul server is NOT RUNNING. "
+            log INFO "Consul server is NOT RUNNING."
         fi
     fi
 
@@ -1225,15 +1123,11 @@ check_lab_status() {
 display_final_info() {
     log INFO "LAB VAULT IS READY TO USE!"
     local vault_root_token=$(cat "$VAULT_DIR/root_token.txt" 2>/dev/null)
-    local approle_role_id=$(cat "$VAULT_DIR/approle_role_id.txt" 2>/dev/null)
-    local approle_secret_id=$(cat "$VAULT_DIR/approle_secret_id.txt" 2>/dev/null)
     local consul_token=$(cat "$CONSUL_DIR/acl_master_token.txt" 2>/dev/null)
 
-    # Determina gli IP corretti in base all'ambiente
-    local vault_ip="127.0.0.1"  # Vault sempre su localhost
-    local consul_ip="127.0.0.1" # Default per Consul
+    local vault_ip="127.0.0.1"
+    local consul_ip="127.0.0.1"
 
-    # Su WSL, usa l'IP della VM per Consul per accessibilit esterna
     if grep -q "microsoft" /proc/version &>/dev/null; then
         local wsl_ip=$(ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
         if [ -n "$wsl_ip" ]; then
@@ -1245,7 +1139,7 @@ display_final_info() {
     local tls_note=""
     if [ "$ENABLE_TLS" = true ]; then
         protocol="https"
-        tls_note=" ( TLS enabled)"
+        tls_note=" (TLS enabled)"
     fi
 
     echo -e "\n${YELLOW}--- ACCESS DETAILS ---${NC}"
@@ -1265,20 +1159,9 @@ display_final_info() {
         echo "  ${protocol}://${vault_ip}:8202"
     fi
 
-    if [ "$ENABLE_TLS" = true ]; then
-        echo -e "\n${YELLOW}--- TLS CERTIFICATE INFO ---${NC}"
-        echo -e "   CA Certificate: ${GREEN}$CA_CERT${NC}"
-        echo -e "   Certificates Directory: ${GREEN}$CERTS_DIR${NC}"
-        echo -e "\n  To trust the CA certificate:"
-        echo -e "  ${CYAN}Linux:${NC} sudo cp $CA_CERT /usr/local/share/ca-certificates/vault-lab-ca.crt && sudo update-ca-certificates"
-        echo -e "  ${CYAN}macOS:${NC} sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain $CA_CERT"
-        echo -e "  ${CYAN}Windows:${NC} Import CA cert via certmgr.msc into Trusted Root Certification Authorities"
-
-        if grep -q "microsoft" /proc/version &>/dev/null; then
-            echo -e "\n  ${YELLOW}WSL Note:${NC} Vault uses localhost (127.0.0.1) for local access"
-            echo -e "  Consul uses VM IP ($consul_ip) for Windows host access"
-        fi
-    fi
+    echo -e "\n${YELLOW}--- DEMO TIP ---${NC}"
+    echo -e "   For CLI with correct env: ${CYAN}./vault-lab-ctl.sh shell${NC}"
+    echo -e "   Status summary:           ${CYAN}./vault-lab-ctl.sh status${NC}"
 }
 
 start_lab_environment_core() {
@@ -1287,7 +1170,6 @@ start_lab_environment_core() {
     validate_ports_available
     mkdir -p "$BIN_DIR"
 
-    # --- NEW: create all required directories up front ---
     mkdir -p "$VAULT_DIR" "$CONSUL_DIR" "$TLS_DIR" "$CERTS_DIR" "$CA_DIR" || \
         log ERROR "Failed to create base directories"
 
@@ -1335,7 +1217,6 @@ restart_lab_environment() {
     stop_lab_environment
     sleep 3
 
-    # Recreate all required directories after stopping (same as start_lab_environment_core)
     mkdir -p "$VAULT_DIR" "$CONSUL_DIR" "$TLS_DIR" "$CERTS_DIR" "$CA_DIR" || \
         log ERROR "Failed to create base directories"
 
@@ -1384,10 +1265,8 @@ start_consul_tls() {
     local consul_exe
     consul_exe=$(get_consul_exe)
 
-    # Make sure we have TLS material
     export CONSUL_CACERT="$CA_CERT"
 
-    # If requested, disable ACL in the config
     if $disable_acl; then
         sed -i 's/enabled = true/enabled = false/' "$CONSUL_DIR/consul_config.hcl" \
             || log ERROR "Failed to modify Consul config for no-ACL mode"
@@ -1398,7 +1277,6 @@ start_consul_tls() {
     echo $! > "$LAB_CONSUL_PID_FILE"
     log INFO "Consul PID saved to $LAB_CONSUL_PID_FILE"
 
-    # Update environment for HTTPS
     CONSUL_ADDR="https://127.0.0.1:8500"
     export CONSUL_CACERT="$CA_CERT"
     export CONSUL_HTTP_ADDR="$CONSUL_ADDR"
@@ -1406,7 +1284,6 @@ start_consul_tls() {
 
     wait_for_http_up "$CONSUL_ADDR/v1/status/leader" 30 "Consul"
 
-    # Bootstrap ACL master token only if ACL is enabled
     if ! $disable_acl; then
         log INFO "Bootstrapping Consul ACL Master Token..."
         local token_file="$CONSUL_DIR/acl_master_token.txt"
@@ -1440,9 +1317,7 @@ load_plugins() {
 
     local count=0
 
-    # Search *.sh, ignoring "no files" case
     for plugin in "$PLUGIN_DIR"/*.sh; do
-        # If glob found nothing, lascia il literal '*.sh'
         if [[ "$plugin" == "$PLUGIN_DIR/*.sh" ]]; then
             break
         fi
@@ -1464,7 +1339,6 @@ load_plugins() {
 # --- Hook executor ---
 run_hook() {
     local hook_name="$1"
-    # If function does not exist, ignore
     if declare -F "$hook_name" >/dev/null; then
         log INFO "Executing hook: $hook_name"
         "$hook_name"
@@ -1472,7 +1346,6 @@ run_hook() {
 }
 
 parse_args() {
-    # reset global variables
     FORCE_CLEANUP_ON_START=false
     VERBOSE_OUTPUT=false
     COLORS_ENABLED=true
@@ -1482,7 +1355,6 @@ parse_args() {
     COMMAND=""
     REMAINING_ARGS=()
 
-    # parse with getopts (gestione di opzioni lunghe con '-:')
     while getopts ":chv-:" opt; do
         case $opt in
             c) FORCE_CLEANUP_ON_START=true ;;
@@ -1505,16 +1377,14 @@ parse_args() {
     done
     shift $((OPTIND-1))
 
-    # first argument after options  il comando
     COMMAND="${1:-start}"
     shift || true
     REMAINING_ARGS=("$@")
 }
 
 main() {
-    clear
+    #clear
 
-    # --- If no arguments are provided, show help immediately ---
     if [ $# -eq 0 ]; then
         clear
         display_help
@@ -1523,23 +1393,46 @@ main() {
 
     parse_args "$@"
 
-    # Load plugins BEFORE executing any command
     load_plugins
 
-    # Interactive prompts (cluster/backend/tls) only for start/reset/restart
+    # If an ephemeral lab was started previously, reuse its runtime dirs (status/stop/shell)
+    if [ -f "$RUNTIME_POINTER_FILE" ]; then
+        # shellcheck disable=SC1090
+        source "$RUNTIME_POINTER_FILE"
+
+        CA_DIR="$TLS_DIR/ca"
+        CERTS_DIR="$TLS_DIR/certs"
+        CA_KEY="$CA_DIR/ca-key.pem"
+        CA_CERT="$CA_DIR/ca-cert.pem"
+        CA_CONFIG="$CA_DIR/ca-config.json"
+        CA_CSR="$CA_DIR/ca-csr.json"
+
+        LAB_VAULT_PID_FILE="$VAULT_DIR/vault.pid"
+        LAB_CONSUL_PID_FILE="$CONSUL_DIR/consul.pid"
+
+        if [ "$ENABLE_TLS" = true ]; then
+            VAULT_ADDR="https://127.0.0.1:8200"
+            CONSUL_ADDR="https://127.0.0.1:8500"
+        else
+            VAULT_ADDR="http://127.0.0.1:8200"
+            CONSUL_ADDR="http://127.0.0.1:8500"
+        fi
+    fi
+
+    # Interactive prompts only for start/reset/restart
     if [[ "$COMMAND" =~ ^(start|reset|restart)$ ]]; then
 
         if [ "$INTERACTIVE_MODE" = false ]; then
-            # CI/CD Mode: automatic default without prompts
+            # CI/CD Mode: ephemeral, single node, file backend, NO TLS (plain HTTP)
             EPHEMERAL_MODE=true
             CLUSTER_MODE="single"
             BACKEND_TYPE="file"
-            ENABLE_TLS=true
+            ENABLE_TLS=false
 
-            echo -e "${YELLOW}CI/CD Mode active: ephemeral, single node, file backend, TLS enabled.${NC}"
+            echo -e "${YELLOW}CI/CD Mode active: ephemeral, single node, file backend, NO TLS (plain HTTP).${NC}"
             echo -e "Using cluster mode: ${GREEN}$CLUSTER_MODE${NC}"
             echo -e "Using backend: ${GREEN}$BACKEND_TYPE${NC}"
-            echo -e "TLS encryption: ${GREEN}enabled${NC}"
+            echo -e "TLS encryption: ${GREEN}disabled${NC}"
 
         elif [ "$EPHEMERAL_MODE" = true ]; then
             # Explicit zero-interaction mode (--ephemeral)
@@ -1553,7 +1446,6 @@ main() {
             echo -e "TLS encryption: ${GREEN}disabled${NC}"
 
         else
-            # ---------- HERE ALL NORMAL PROMPTS (--interactive) ----------
             if [[ ! "$CLUSTER_MODE" =~ ^(single|multi)$ ]]; then
                 echo -e "\n${YELLOW}Cluster mode (single/multi) [single]:${NC}"
                 read -r cchoice
@@ -1584,20 +1476,17 @@ main() {
                 VAULT_ADDR="https://127.0.0.1:8200"
                 CONSUL_ADDR="https://127.0.0.1:8500"
             }
-            # ---------- END PROMPT ----------
         fi
     fi
 
-    # Reset runtime directories after prompts
-    if [ "$EPHEMERAL_MODE" = true ]; then
-        # ephemeral directory for entire lab
+    # Reset runtime directories only when starting/restarting the lab
+    if [ "$EPHEMERAL_MODE" = true ] && [[ "$COMMAND" =~ ^(start|reset|restart)$ ]]; then
         RUNTIME_DIR=$(mktemp -d -t vault-lab-XXXXXXXXXX)
 
         VAULT_DIR="$RUNTIME_DIR/vault"
         CONSUL_DIR="$RUNTIME_DIR/consul"
         TLS_DIR="$RUNTIME_DIR/tls"
 
-        # TLS derivatives
         CA_DIR="$TLS_DIR/ca"
         CERTS_DIR="$TLS_DIR/certs"
         CA_KEY="$CA_DIR/ca-key.pem"
@@ -1605,7 +1494,6 @@ main() {
         CA_CONFIG="$CA_DIR/ca-config.json"
         CA_CSR="$CA_DIR/ca-csr.json"
 
-        # pid file in ephemeral directories
         LAB_VAULT_PID_FILE="$VAULT_DIR/vault.pid"
         LAB_CONSUL_PID_FILE="$CONSUL_DIR/consul.pid"
 
@@ -1613,10 +1501,20 @@ main() {
         echo "  VAULT_DIR=$VAULT_DIR"
         echo "  CONSUL_DIR=$CONSUL_DIR"
         echo "  TLS_DIR=$TLS_DIR"
+
+        # Persist ephemeral runtime so that future commands can find it
+        cat > "$RUNTIME_POINTER_FILE" <<EOF
+EPHEMERAL_MODE=true
+RUNTIME_DIR="$RUNTIME_DIR"
+VAULT_DIR="$VAULT_DIR"
+CONSUL_DIR="$CONSUL_DIR"
+TLS_DIR="$TLS_DIR"
+ENABLE_TLS="$ENABLE_TLS"
+BACKEND_TYPE="$BACKEND_TYPE"
+CLUSTER_MODE="$CLUSTER_MODE"
+EOF
     fi
 
-
-    # command execution
     case "$COMMAND" in
         start)   $FORCE_CLEANUP_ON_START && cleanup_previous_environment; start_lab_environment_core ;;
         stop)    stop_lab_environment ;;
