@@ -41,11 +41,18 @@ Just a script.
 🎯 **Quick Start**
 ------------------
 
+**Cloning the repo**
+```bash
+git clone https://github.com/<org-or-user>/zero-to-vault-lab.git
+cd zero-to-vault-lab
+chmod +x vault-lab-ctl.sh
+```
+
 **CI/CD Mode (default, automated)**
 
 `./vault-lab-ctl.sh start`
 
-This will run with: ephemeral mode, single-node, file backend, TLS enabled.
+This will run with: ephemeral mode, single-node, file backend, TLS disabled.
 
 **Interactive Mode (full control)**
 
