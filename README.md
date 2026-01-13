@@ -43,7 +43,7 @@ Just a script.
 
 **Cloning the repo**
 ```bash
-git clone https://github.com/<org-or-user>/zero-to-vault-lab.git
+git clone https://github.com/marcogomiero/zero-to-vault-lab.git
 cd zero-to-vault-lab
 chmod +x vault-lab-ctl.sh
 ```
