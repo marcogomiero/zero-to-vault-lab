@@ -1,302 +1,244 @@
-**ZERO-TO-VAULT-LAB**
-=====================
+🔐 Zero to Vault Lab
+====================
 
-A full HashiCorp Vault environment in **one command**.
-
-Spin up a complete Vault playground --- single-node or HA with Consul --- in seconds.\
-TLS, PKI, Transit, AppRole, Userpass, audit, and batteries included.\
-Build, break, reset, repeat.\
-No setup. No clutter. No fear.
+> **From zero to a working HashiCorp Vault lab in minutes.**\
+> No TLS. No cloud. No excuses. Just learning.
 
 * * * * *
 
-🚀 **Why this exists**
+🚀 What is this?
+----------------
+
+**Zero to Vault Lab** is an **ephemeral, opinionated Vault playground** designed for:
+
+-   DevOps engineers
+
+-   DevSecOps beginners
+
+-   Security-curious developers
+
+It lets you **spin up a real Vault instance locally**, explore authentication methods, policies and secrets, and then **destroy everything cleanly**.
+
+No prior Vault experience required.
+
+* * * * *
+
+🧠 Why this lab exists
 ----------------------
 
-Because learning Vault shouldn't feel like assembling a server room.
+Vault is powerful --- and intimidating.
 
-This project gives you:
+This project exists to remove friction:
 
--   **Instant Vault** (single or multi-node)
+-   ❌ no manual config
 
--   **Automatic TLS** (private CA, SANs, signed certs)
+-   ❌ no TLS ceremony
 
--   **Consul optional** (file or Consul backend)
+-   ❌ no cloud dependency
 
--   **Preconfigured engines** (KV v2, Transit, PKI, Database, Userpass, AppRole)
+-   ❌ no leftover state
 
--   **Plugin Mode** to extend the lab with custom hooks
-
--   **Ephemeral Mode** --- a RAM-only Vault that leaves zero traces
-
--   **CI/CD Mode** --- fully automated, zero prompts
-
--   **Interactive Mode** --- full control over every setting
-
-No YAML. No Docker. No Terraform.\
-Just a script.
+Just run a script, get a Vault, learn by doing.
 
 * * * * *
 
-🎯 **Quick Start**
-------------------
+⚡ Quick Start (60 seconds)
+--------------------------
 
-**Cloning the repo**
-```bash
-git clone https://github.com/marcogomiero/zero-to-vault-lab.git
+### Requirements
+
+-   Linux / WSL
+
+-   `bash`, `curl`, `jq`, `unzip`
+
+-   No Docker required
+
+### Start the lab
+
+`git clone https://github.com/marcogomiero/zero-to-vault-lab.git
 cd zero-to-vault-lab
-chmod +x vault-lab-ctl.sh
-```
+./vault-lab-ctl-dev.sh start`
 
-**CI/CD Mode (default, automated)**
+You'll immediately get:
 
-`./vault-lab-ctl.sh start`
+-   Vault address
 
-This will run with: ephemeral mode, single-node, file backend, TLS disabled.
+-   Root token
 
-**Interactive Mode (full control)**
-
-`./vault-lab-ctl.sh --interactive start`
-
-Get prompted for cluster mode, backend type, and TLS settings.
-
-Multi-node cluster with Consul:
-
-`./vault-lab-ctl.sh --cluster multi --backend consul --interactive start`
-
-Stop the lab:
-
-`./vault-lab-ctl.sh stop`
-
-Reset everything:
-
-`./vault-lab-ctl.sh reset`
+-   UI ready at `http://127.0.0.1:8200`
 
 * * * * *
 
-🔥 **Ephemeral Mode**
---------------------
+🎬 Demo
+-------------
 
-Ephemeral Mode creates a full Vault+Consul environment that **lives entirely in RAM** and **vanishes** cleanly when you stop it.
+**What happens here:**
 
--   No persistent folders
+1.  Start the lab
 
--   No secret leftovers
+2.  Login via UI
 
--   No cleanup required
+3.  Bootstrap auth methods
 
--   No pollution of your project directory
+4.  Login with a demo user
 
--   Perfect for demos, workshops, conference talks, or chaos testing
+5.  Stop and clean everything
 
-When using `--ephemeral`, the script automatically uses:
+> 📌 *GIF is intentionally short and terminal-focused.*
 
--   Single-node cluster mode
-
--   File backend (in /tmp)
-
--   No TLS by default
-
-`./vault-lab-ctl.sh --ephemeral start`
-
-After running, all data disappears when you stop the lab:
-
-`./vault-lab-ctl.sh stop`
-
-This alone makes the lab dramatically more flexible than traditional Vault examples.
+*(I'll tell you below how to record it cleanly)*
 
 * * * * *
 
-🔧 **Plugin Mode & Hooks**
----------------------------
+🧪 What gets bootstrapped
+-------------------------
 
-Turn the lab into a **framework** by adding custom plugins.
+Running:
 
-Drop any `*.sh` file in:
+`./vault-lab-ctl-dev.sh bootstrap`
 
-`plugins/`
+Configures:
 
-Plugins are automatically discovered and sourced before the lab starts.
+-   🔑 **Secrets engines**
 
-Available hooks you can implement in your plugins:
+    -   `kv-v2`
 
--   `on_after_start()` --- runs after Vault and Consul are ready
+    -   `transit`
 
--   `on_before_stop()` --- runs before Vault shuts down
+-   🔐 **Auth methods**
 
--   `on_after_reset()` --- runs after reset is complete
+    -   `approle`
 
-Example plugin (`plugins/my-demo.sh`):
+    -   `userpass`
 
-```bash
-on_after_start() {
-    log INFO "[my-demo] Vault started. Setting up demo..."
-    vault auth enable userpass
-    vault write auth/userpass/users/demo password="demo123"
-}
-```
+-   👤 **Demo user**
 
-Plugins have full access to:
+    -   username: `demo`
 
--   Environment variables: `VAULT_ADDR`, `VAULT_TOKEN`, `CONSUL_ADDR`
+    -   password: `demo`
 
--   Logging functions: `log_info()`, `log_warn()`, `log_error()`
+-   📜 **Policies**
 
--   Vault CLI (in `$BIN_DIR/vault`)
+    -   read/write access to `kv/demo/*`
+
+    -   health check access
+
+Everything is **idempotent** and safe to re-run.
 
 * * * * *
 
-📋 **Command Reference**
-------------------------
+🖥️ Available Commands
+----------------------
 
 | Command | Description |
-|---------|-------------|
-| `start` | Start the Vault lab with current settings |
-| `stop` | Stop Vault and Consul (keeps data) |
-| `restart` | Stop and start the lab |
-| `reset` | Stop and completely reset all data |
-| `status` | Show lab status and running processes |
-| `cleanup` | Remove all lab directories |
-| `shell` | Open an interactive shell with `VAULT_ADDR`, `VAULT_TOKEN` exported |
+| --- | --- |
+| `start` | Start a fresh ephemeral Vault lab |
+| `restart` | Destroy and recreate the lab |
+| `bootstrap` | Configure engines, auth, users |
+| `status` | Show Vault status |
+| `shell` | Open a shell with Vault env vars set |
+| `stop` | Stop Vault and remove all data |
+| `--help` | Show inline help |
 
 * * * * *
 
-🎛️ **Flags & Options**
------------------------
+🔐 Authentication examples
+--------------------------
 
-| Flag | Description |
-|------|-------------|
-| `-h, --help` | Show help message |
-| `-v` | Verbose output (debug logging) |
-| `-c` | Force cleanup on start |
-| `--interactive` | Enable interactive prompts (default: CI/CD mode) |
-| `--ephemeral` | Enable ephemeral/RAM-only mode |
-| `--tls` | Enable TLS encryption for Vault/Consul |
-| `--cluster <single\|multi>` | Set cluster mode (single-node or HA) |
-| `--backend <file\|consul>` | Set storage backend |
-| `--no-color` | Disable colored output |
+### Root token
 
-Examples:
+Printed automatically after `start` or `bootstrap`.
 
-`./vault-lab-ctl.sh --interactive --tls --cluster multi start`
+`vault login <root-token>`
 
-`./vault-lab-ctl.sh -v --ephemeral start`
+### Userpass (demo)
 
-`./vault-lab-ctl.sh --backend consul --interactive start`
+`vault login -method=userpass username=demo password=demo`
 
 * * * * *
 
-🔐 **Operating Modes**
------------------------
+🧹 Cleanup philosophy
+---------------------
 
-**CI/CD Mode (default)**
+This lab is **ephemeral by design**.
 
-When you run `./vault-lab-ctl.sh start` without `--interactive`:
+Running:
 
--   Ephemeral mode is ON
+`./vault-lab-ctl-dev.sh stop`
 
--   Single-node cluster
+Will:
 
--   File backend
+-   kill all Vault processes
 
--   TLS enabled
+-   free port 8200
 
--   No prompts, fully automated
+-   remove all `/tmp/vault-lab-*` directories
 
-Ideal for automated tests, GitHub Actions, GitLab CI, etc.
-
-**Interactive Mode**
-
-When you run `./vault-lab-ctl.sh --interactive start`:
-
--   You're prompted for cluster mode (single/multi)
-
--   You're prompted for backend type (file/consul)
-
--   You're prompted for TLS (enabled/disabled)
-
--   Full control over every setting
-
-Ideal for learning, experimentation, and development.
+No leftovers. Ever.
 
 * * * * *
 
-📝 **What comes preconfigured**
--------------------------------
-
-Every Vault instance is ready to use immediately:
-
--   KV v2 (`secret/`) --- secret storage
-
--   Transit (`transit/`) --- encryption as a service
-
--   PKI (`pki/`) --- certificate management
-
--   Userpass + AppRole --- authentication methods
-
--   Database engine (demo config)
-
--   Audit device (logs to `/dev/null` by default)
-
--   Full `vault` CLI access via `./vault-lab-ctl.sh shell`
-
-* * * * *
-
-📦 **Features at a glance**
----------------------------
-
--   Single-file architecture
-
--   Automatic binary download and platform detection
-
--   Single-node or multi-node (HA) clusters
-
--   File backend or Consul backend
-
--   Optional TLS with full CA chain and signed certs
-
--   Prerequisite auto-detection and installation prompts
-
--   Full lifecycle control: start, stop, restart, reset, cleanup, status
-
--   **Ephemeral Mode** (RAM-only, zero traces)
-
--   **CI/CD Mode** (fully automated)
-
--   **Interactive Mode** (full user control)
-
--   **Plugin Mode** with lifecycle hooks
-
--   Shell access with pre-configured environment
-
--   Port validation and process cleanup
-
--   Works on Linux, macOS, Windows/WSL
-
-* * * * *
-
-🧠 **Use it for**
+🎯 Learning goals
 -----------------
 
--   Learning Vault from the ground up
+After using this lab, you should understand:
 
--   Teaching workshops and training sessions
+-   what Vault *actually* does
 
--   PKI, Transit, AppRole experiments
+-   how auth methods differ
 
--   HA cluster simulations
+-   how policies control access
 
--   Break/fix exercises
+-   how secrets engines behave
 
--   Building and testing custom automations via Plugin Mode
+-   how to interact via CLI and UI
 
--   Demo environments for talks and conferences
-
--   CI/CD integration and automated testing
-
--   One-time ephemeral sandboxes
+This is **not a mock**.\
+It's a **real Vault** with training wheels.
 
 * * * * *
 
-🌟 **Zero friction. Zero excuses. Zero to Vault.**
---------------------------------------------------
+🛑 What this is NOT
+-------------------
+
+-   ❌ Production ready
+
+-   ❌ Secure by default
+
+-   ❌ TLS-enabled
+
+-   ❌ Cloud-integrated
+
+This is a **learning lab**, not a blueprint.
+
+* * * * *
+
+📦 Roadmap (maybe)
+------------------
+
+-   Consul backend / HA mode
+
+-   Docker-based version
+
+-   GitHub Actions CI
+
+-   GitHub Pages docs
+
+-   Advanced bootstrap profiles
+
+* * * * *
+
+🤝 Contributing
+---------------
+
+PRs welcome, especially for:
+
+-   documentation
+
+-   diagrams
+
+-   examples
+
+-   educational improvements
+
+Keep it **simple**, **didactic**, **honest**.
