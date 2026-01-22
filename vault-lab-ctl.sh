@@ -5,54 +5,21 @@ set -E
 trap 'echo -e "\033[0;31m[ERROR]\033[0m Script aborted at line $LINENO" >&2' ERR
 
 # ==========================================================
-# Vault Lab – Ephemeral v3.3
+# Vault Lab – Ephemeral (FINAL, stateful & deterministic)
 #
 # PURPOSE
 #   Spin up a fully ephemeral local HashiCorp Vault lab.
-#   Deterministic lifecycle, opinionated bootstrap.
 #
 # USAGE
-#   ./vault-lab-ctl-dev.sh <command>
+#   ./vault-lab-ctl.sh <command>
 #
 # COMMANDS
-#   start
-#       Start a new Vault lab if none is running.
-#
-#   restart
-#       Stop any existing lab and start a fresh one.
-#
-#   bootstrap
-#       Opinionated, idempotent Vault bootstrap:
-#         - kv-v2 engine
-#         - transit engine
-#         - approle auth
-#         - userpass auth
-#         - demo policies, roles and users
-#
-#   status
-#       Show Vault status.
-#
-#   shell
-#       Open an interactive shell with Vault env vars set.
-#
-#   stop
-#       Stop Vault and remove all runtime data.
-#
-#   -h, --help
-#       Show this help message.
-#
-# VERSIONING
-#   Vault version pinned to major.minor.patch.
-#   Default: 1.21.2
-#
-#   Override with:
-#     VAULT_VERSION=1.21.3 ./vault-lab-ctl-dev.sh start
-#
-# NOTES
-#   - TLS disabled (lab only)
-#   - All data is ephemeral under /tmp/vault-lab-*
-#   - Root token exists only for lab lifetime
-#   - WSL-safe
+#   start        Start Vault if not running
+#   restart     Destroy and recreate Vault
+#   bootstrap   Configure demo engines, auths and data
+#   status      Show Vault status (root token)
+#   env         Print env exports (manual)
+#   stop        Destroy the lab
 # ==========================================================
 
 SCRIPT_DIR="$(pwd)"
@@ -62,55 +29,74 @@ VAULT_ADDR="http://127.0.0.1:8200"
 VAULT_PORT="8200"
 VAULT_VERSION="${VAULT_VERSION:-1.21.2}"
 
+STATE_FILE="/tmp/vault-lab-current"
+
 # ---------------- Logging ----------------
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-log()  { echo -e "${GREEN}[INFO]${NC} $*"; }
-warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
-fatal(){ echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
+log()   { echo -e "${GREEN}[INFO]${NC} $*"; }
+fatal() { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 
 # ---------------- Helpers ----------------
 get_exe() { echo "$BIN_DIR/$1"; }
 
-print_access_info() {
-  echo
-  echo "=================================================="
-  echo "Vault Lab ready"
-  echo
-  echo "Vault address:"
-  echo "  $VAULT_ADDR"
-  echo
-  echo "Vault token:"
-  echo "  $VAULT_TOKEN"
-  echo
-  echo "Userpass login example:"
-  echo "  vault login -method=userpass username=demo password=demo"
-  echo "=================================================="
-  echo
-}
-
-load_access() {
-  local token_file
-  token_file=$(ls -1 /tmp/vault-lab-*/root.token 2>/dev/null | head -1 || true)
-
-  [ -f "$token_file" ] || fatal "No Vault token found. Is the lab running?"
-
-  export VAULT_ADDR="http://127.0.0.1:8200"
-  export VAULT_TOKEN
-  VAULT_TOKEN="$(cat "$token_file")"
+is_vault_running() {
+  ss -ltn "( sport = :$VAULT_PORT )" 2>/dev/null | grep -q ":$VAULT_PORT"
 }
 
 wait_for_port_free() {
   for _ in {1..10}; do
-    if ! ss -ltn "( sport = :$VAULT_PORT )" 2>/dev/null | grep -q ":$VAULT_PORT"; then
+    if ! is_vault_running; then
       return
     fi
     sleep 1
   done
   fatal "Port $VAULT_PORT still in use"
+}
+
+print_access_info() {
+  local token="$1"
+
+  echo
+  echo "=================================================="
+  echo "Vault Lab ready"
+  echo
+  echo "1) Export environment variables in YOUR shell:"
+  echo
+  echo "   export VAULT_ADDR=$VAULT_ADDR"
+  [ -n "$token" ] && echo "   export VAULT_TOKEN=$token"
+  echo
+  echo "2) Verify Vault status:"
+  echo
+  echo "   vault status"
+  echo
+  echo "3) Userpass login example (AFTER bootstrap):"
+  echo
+  echo "   unset VAULT_TOKEN"
+  echo "   rm -f ~/.vault-token"
+  echo "   vault login -method=userpass username=demo password=demo"
+  echo
+  echo "IMPORTANT NOTES:"
+  echo " - Vault CLI persists tokens in ~/.vault-token"
+  echo " - Unsetting VAULT_TOKEN alone may NOT be enough"
+  echo " - After restart, Vault is EMPTY until bootstrap is run"
+  echo "=================================================="
+  echo
+}
+
+# ---------------- State handling ----------------
+load_root_token() {
+  [ -f "$STATE_FILE" ] || fatal "Vault lab state not found. Is the lab running?"
+
+  local runtime_dir
+  runtime_dir="$(cat "$STATE_FILE")"
+
+  local token_file="$runtime_dir/vault/root.token"
+  [ -f "$token_file" ] || fatal "Root token not found. Is the lab initialized?"
+
+  cat "$token_file"
 }
 
 # ---------------- Download ----------------
@@ -138,11 +124,11 @@ download_vault() {
 create_runtime() {
   RUNTIME_DIR=$(mktemp -d /tmp/vault-lab-XXXXXX)
   VAULT_DIR="$RUNTIME_DIR/vault"
-  ROOT_TOKEN_FILE="$RUNTIME_DIR/root.token"
   mkdir -p "$VAULT_DIR"
+
+  echo "$RUNTIME_DIR" > "$STATE_FILE"
 }
 
-# ---------------- Vault ----------------
 wait_for_vault() {
   log "Waiting for Vault API..."
   for _ in {1..20}; do
@@ -152,9 +138,10 @@ wait_for_vault() {
   fatal "Vault did not start"
 }
 
+# ---------------- Vault ----------------
 start_vault() {
   download_vault
-  export VAULT_ADDR
+  export VAULT_ADDR="$VAULT_ADDR"
 
   cat > "$VAULT_DIR/vault.hcl" <<EOF
 storage "file" {
@@ -173,21 +160,34 @@ EOF
   wait_for_vault
 
   out=$("$(get_exe vault)" operator init -key-shares=1 -key-threshold=1 -format=json)
-  echo "$out" | jq -r '.root_token' > "$ROOT_TOKEN_FILE"
+  echo "$out" | jq -r '.root_token' > "$VAULT_DIR/root.token"
   echo "$out" | jq -r '.unseal_keys_b64[0]' > "$VAULT_DIR/unseal.key"
 
   "$(get_exe vault)" operator unseal "$(cat "$VAULT_DIR/unseal.key")"
 
-  export VAULT_TOKEN
-  VAULT_TOKEN="$(cat "$ROOT_TOKEN_FILE")"
-
   log "Vault ready (version $VAULT_VERSION)"
-  print_access_info
+  print_access_info "$(cat "$VAULT_DIR/root.token")"
 }
 
-# ---------------- Bootstrap ----------------
+# ---------------- Commands ----------------
+cmd_start() {
+  is_vault_running && fatal "Vault already running. Use 'status' or 'restart'."
+  log "Starting Vault lab"
+  create_runtime
+  start_vault
+}
+
+cmd_restart() {
+  cmd_stop || true
+  wait_for_port_free
+  cmd_start
+}
+
 cmd_bootstrap() {
-  load_access
+  export VAULT_ADDR="$VAULT_ADDR"
+  export VAULT_TOKEN
+  VAULT_TOKEN="$(load_root_token)"
+
   log "Bootstrapping Vault"
 
   vault secrets list | grep -q '^kv/'       || vault secrets enable -path=kv kv-v2
@@ -195,59 +195,52 @@ cmd_bootstrap() {
   vault auth list    | grep -q '^approle/'  || vault auth enable approle
   vault auth list    | grep -q '^userpass/' || vault auth enable userpass
 
-  vault policy read app-read >/dev/null 2>&1 || vault policy write app-read - <<EOF
+  vault policy write app-read - <<EOF
 path "kv/data/*" {
   capabilities = ["read"]
 }
 EOF
 
-  vault policy read user-demo >/dev/null 2>&1 || vault policy write user-demo - <<EOF
+  vault policy write user-demo - <<EOF
 path "kv/data/demo/*" {
   capabilities = ["read", "create", "update"]
 }
-
 path "sys/health" {
   capabilities = ["read"]
 }
 EOF
 
-  vault read auth/approle/role/demo-app >/dev/null 2>&1 || \
-    vault write auth/approle/role/demo-app token_policies="app-read" token_ttl=1h
-
-  vault read auth/userpass/users/demo >/dev/null 2>&1 || \
-    vault write auth/userpass/users/demo password="demo" policies="user-demo"
+  vault write auth/approle/role/demo-app token_policies="app-read" token_ttl=1h
+  vault write auth/userpass/users/demo password="demo" policies="user-demo"
 
   vault kv put kv/demo/config app="demo" env="lab"
   vault kv put kv/demo/credentials username="demo" password="secret"
 
   log "Bootstrap completed"
-  print_access_info
+  print_access_info "$VAULT_TOKEN"
 }
 
-# ---------------- Stop / Restart ----------------
+cmd_status() {
+  export VAULT_ADDR="$VAULT_ADDR"
+  export VAULT_TOKEN
+  VAULT_TOKEN="$(load_root_token)"
+  "$(get_exe vault)" status
+}
+
+cmd_env() {
+  local token
+  token="$(load_root_token)"
+  cat <<EOF
+export VAULT_ADDR=$VAULT_ADDR
+export VAULT_TOKEN=$token
+EOF
+}
+
 cmd_stop() {
   pgrep -f '/tmp/vault-lab-.*/vault.hcl' | xargs -r kill -9 || true
-  wait_for_port_free || true
   rm -rf /tmp/vault-lab-* || true
+  rm -f "$STATE_FILE" || true
   log "Lab destroyed"
-}
-
-# ---------------- Commands ----------------
-cmd_start() {
-  cmd_stop || true
-  log "Starting Vault lab"
-  create_runtime
-  start_vault
-}
-
-cmd_restart() { cmd_start; }
-cmd_status()  { load_access; "$(get_exe vault)" status; }
-cmd_shell()   { load_access; exec "${SHELL:-bash}" -i; }
-
-# ---------------- Help ----------------
-show_help() {
-  sed -n '/^# ==========================================================/,/^# ==========================================================/p' "$0" \
-    | sed '1d;$d;s/^# \{0,1\}//'
 }
 
 # ---------------- Main ----------------
@@ -256,8 +249,11 @@ case "${1:-}" in
   restart)   cmd_restart ;;
   bootstrap) cmd_bootstrap ;;
   status)    cmd_status ;;
-  shell)     cmd_shell ;;
+  env)       cmd_env ;;
   stop)      cmd_stop ;;
-  -h|--help|"") show_help ;;
+  -h|--help|"")
+    sed -n '/^# ==========================================================/,/^# ==========================================================/p' "$0" \
+      | sed '1d;$d;s/^# \{0,1\}//'
+    ;;
   *) fatal "Unknown command" ;;
 esac
