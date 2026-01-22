@@ -5,10 +5,15 @@ set -E
 trap 'echo -e "\033[0;31m[ERROR]\033[0m Script aborted at line $LINENO" >&2' ERR
 
 # ==========================================================
-# Vault Lab – Ephemeral (FINAL, stateful & deterministic)
+# Vault Lab – Ephemeral (FINAL, safe auto-update + fallback)
 #
 # PURPOSE
 #   Spin up a fully ephemeral local HashiCorp Vault lab.
+#
+# UPDATE POLICY
+#   - Check latest STABLE Vault version (no rc/beta)
+#   - Try to download it
+#   - On any failure, fallback to local binary
 #
 # USAGE
 #   ./vault-lab-ctl.sh <command>
@@ -27,16 +32,17 @@ BIN_DIR="$SCRIPT_DIR/bin"
 
 VAULT_ADDR="http://127.0.0.1:8200"
 VAULT_PORT="8200"
-VAULT_VERSION="${VAULT_VERSION:-1.21.2}"
 
 STATE_FILE="/tmp/vault-lab-current"
 
 # ---------------- Logging ----------------
 GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
 log()   { echo -e "${GREEN}[INFO]${NC} $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 fatal() { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 
 # ---------------- Helpers ----------------
@@ -56,6 +62,92 @@ wait_for_port_free() {
   fatal "Port $VAULT_PORT still in use"
 }
 
+# ---------------- Version handling ----------------
+get_latest_stable_vault_version() {
+  curl -fsSL https://releases.hashicorp.com/vault/index.json \
+  | jq -r '.versions | keys[]' \
+  | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+  | sort -V \
+  | tail -1
+}
+
+get_local_vault_version() {
+  local exe="$1"
+  [ -x "$exe" ] || return 1
+  "$exe" --version | awk 'NR==1{print $2}' | sed 's/^v//'
+}
+
+try_download_vault() {
+  local version="$1"
+  local exe="$2"
+  local tmpdir
+
+  log "Attempting to download Vault $version"
+
+  tmpdir="$(mktemp -d)"
+
+  if ! curl -fsSL \
+      "https://releases.hashicorp.com/vault/${version}/vault_${version}_linux_amd64.zip" \
+      -o "$tmpdir/vault.zip"; then
+    warn "Download failed"
+    rm -rf "$tmpdir"
+    return 1
+  fi
+
+  if ! unzip -oq "$tmpdir/vault.zip" -d "$tmpdir"; then
+    warn "Unzip failed"
+    rm -rf "$tmpdir"
+    return 1
+  fi
+
+  if [ ! -f "$tmpdir/vault" ]; then
+    warn "Vault binary not found in archive"
+    rm -rf "$tmpdir"
+    return 1
+  fi
+
+  mv -f "$tmpdir/vault" "$exe"
+  chmod +x "$exe"
+  rm -rf "$tmpdir"
+
+  log "Vault $version installed successfully"
+}
+
+download_vault() {
+  mkdir -p "$BIN_DIR"
+  local exe
+  exe="$(get_exe vault)"
+
+  local local_version=""
+  local latest_version=""
+
+  log "Checking latest stable Vault version..."
+
+  local_version="$(get_local_vault_version "$exe" || true)"
+
+  if latest_version="$(get_latest_stable_vault_version 2>/dev/null)"; then
+    log "Latest stable Vault version: $latest_version"
+
+    if [ -n "$local_version" ]; then
+      log "Local Vault version: $local_version"
+    else
+      log "No local Vault binary found"
+    fi
+
+    if [ "$latest_version" != "$local_version" ]; then
+      try_download_vault "$latest_version" "$exe" || \
+        warn "Using local Vault binary ($local_version)"
+    else
+      log "Vault already up to date ($local_version)"
+    fi
+  else
+    warn "Unable to check latest Vault version (offline?)"
+  fi
+
+  [ -x "$exe" ] || fatal "Vault binary not available and download failed"
+}
+
+# ---------------- Output ----------------
 print_access_info() {
   local token="$1"
 
@@ -97,27 +189,6 @@ load_root_token() {
   [ -f "$token_file" ] || fatal "Root token not found. Is the lab initialized?"
 
   cat "$token_file"
-}
-
-# ---------------- Download ----------------
-download_vault() {
-  mkdir -p "$BIN_DIR"
-  local exe
-  exe=$(get_exe vault)
-
-  if [ -x "$exe" ]; then
-    local current
-    current=$("$exe" --version | awk 'NR==1{print $2}' | sed 's/^v//')
-    [ "$current" = "$VAULT_VERSION" ] && return
-  fi
-
-  log "Downloading Vault $VAULT_VERSION"
-  curl -fsSL \
-    "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip" \
-    -o /tmp/vault.zip
-
-  unzip -oq /tmp/vault.zip -d "$BIN_DIR"
-  chmod +x "$exe"
 }
 
 # ---------------- Runtime ----------------
@@ -165,7 +236,7 @@ EOF
 
   "$(get_exe vault)" operator unseal "$(cat "$VAULT_DIR/unseal.key")"
 
-  log "Vault ready (version $VAULT_VERSION)"
+  log "Vault ready"
   print_access_info "$(cat "$VAULT_DIR/root.token")"
 }
 
@@ -190,10 +261,10 @@ cmd_bootstrap() {
 
   log "Bootstrapping Vault"
 
-  vault secrets list | grep -q '^kv/'       || vault secrets enable -path=kv kv-v2
-  vault secrets list | grep -q '^transit/'  || vault secrets enable transit
-  vault auth list    | grep -q '^approle/'  || vault auth enable approle
-  vault auth list    | grep -q '^userpass/' || vault auth enable userpass
+  vault secrets enable -path=kv kv-v2 2>/dev/null || true
+  vault secrets enable transit 2>/dev/null || true
+  vault auth enable approle 2>/dev/null || true
+  vault auth enable userpass 2>/dev/null || true
 
   vault policy write app-read - <<EOF
 path "kv/data/*" {
