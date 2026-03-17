@@ -12,19 +12,23 @@ trap 'echo -e "\033[0;31m[ERROR]\033[0m Script aborted at line $LINENO" >&2' ERR
 #
 # UPDATE POLICY
 #   - Check latest STABLE Vault version (no rc/beta)
-#   - Try to download it
-#   - On any failure, fallback to local binary
+#   - Try to download it (multi-platform: linux/darwin; amd64/arm64)
+#   - On any failure, fallback to local binary (if present)
 #
 # USAGE
 #   ./vault-lab-ctl.sh <command>
 #
 # COMMANDS
-#   start        Start Vault if not running
+#   start       Start Vault if not running
 #   restart     Destroy and recreate Vault
 #   bootstrap   Configure demo engines, auths and data
 #   status      Show Vault status (root token)
 #   env         Print env exports (manual)
 #   stop        Destroy the lab
+#
+# REQUIREMENTS
+#   curl, jq, unzip
+#   Linux: ss (or netstat)   | macOS: lsof (or netstat)
 # ==========================================================
 
 SCRIPT_DIR="$(pwd)"
@@ -48,8 +52,41 @@ fatal() { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 # ---------------- Helpers ----------------
 get_exe() { echo "$BIN_DIR/$1"; }
 
+has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+detect_platform() {
+  # Returns "os_arch" (e.g., linux_amd64, linux_arm64, darwin_amd64, darwin_arm64)
+  local os arch
+
+  case "$(uname -s)" in
+    Linux)  os="linux" ;;
+    Darwin) os="darwin" ;;
+    *) fatal "Unsupported OS: $(uname -s)" ;;
+  esac
+
+  case "$(uname -m)" in
+    x86_64)  arch="amd64" ;;
+    aarch64) arch="arm64" ;;
+    arm64)   arch="arm64" ;; # macOS (Apple Silicon) reports arm64
+    *) fatal "Unsupported architecture: $(uname -m)" ;;
+  esac
+
+  echo "${os}_${arch}"
+}
+
 is_vault_running() {
-  ss -ltn "( sport = :$VAULT_PORT )" 2>/dev/null | grep -q ":$VAULT_PORT"
+  # Cross-platform port check for localhost:$VAULT_PORT
+  # Prefer ss (Linux), fallback to lsof (macOS), then netstat
+  if has_cmd ss; then
+    ss -ltn "( sport = :$VAULT_PORT )" 2>/dev/null | grep -q ":$VAULT_PORT" && return 0 || return 1
+  elif has_cmd lsof; then
+    lsof -nP -i TCP:"$VAULT_PORT" -sTCP:LISTEN >/dev/null 2>&1 && return 0 || return 1
+  elif has_cmd netstat; then
+    netstat -an 2>/dev/null | grep -E "[:\.]$VAULT_PORT[[:space:]]" | grep -qi LISTEN && return 0 || return 1
+  else
+    warn "No suitable port checking tool found (ss/lsof/netstat). Assuming not running."
+    return 1
+  fi
 }
 
 wait_for_port_free() {
@@ -80,15 +117,18 @@ get_local_vault_version() {
 try_download_vault() {
   local version="$1"
   local exe="$2"
-  local tmpdir
+  local tmpdir platform url
 
   log "Attempting to download Vault $version"
 
   tmpdir="$(mktemp -d)"
+  platform="$(detect_platform)"
+  url="https://releases.hashicorp.com/vault/${version}/vault_${version}_${platform}.zip"
 
-  if ! curl -fsSL \
-      "https://releases.hashicorp.com/vault/${version}/vault_${version}_linux_amd64.zip" \
-      -o "$tmpdir/vault.zip"; then
+  log "Platform detected: $platform"
+  log "Download URL: $url"
+
+  if ! curl -fsSL "$url" -o "$tmpdir/vault.zip"; then
     warn "Download failed"
     rm -rf "$tmpdir"
     return 1
@@ -308,6 +348,7 @@ EOF
 }
 
 cmd_stop() {
+  # Kill running Vault based on the generated config path pattern
   pgrep -f '/tmp/vault-lab-.*/vault.hcl' | xargs -r kill -9 || true
   rm -rf /tmp/vault-lab-* || true
   rm -f "$STATE_FILE" || true
