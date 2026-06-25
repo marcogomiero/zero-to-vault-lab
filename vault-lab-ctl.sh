@@ -2,7 +2,8 @@
 set -euo pipefail
 set -E
 
-# $BASH_COMMAND shows the failing command, not just the line number.
+umask 077   # garantisce che tutti i file creati (token, chiavi) siano leggibili solo dall'utente
+
 trap 'echo -e "\033[0;31m[ERROR]\033[0m Script aborted at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # ==========================================================
@@ -25,10 +26,11 @@ trap 'echo -e "\033[0;31m[ERROR]\033[0m Script aborted at line $LINENO: $BASH_CO
 #   bootstrap   Configure demo engines, auths and data
 #   status      Show Vault status (root token)
 #   env         Print env exports (manual)
+#   logs        Tail the Vault server log
 #   stop        Destroy the lab
 #
 # REQUIREMENTS
-#   curl, jq, unzip
+#   curl, jq, unzip (or python3 fallback)
 #   Linux: ss (or netstat)   | macOS: lsof (or netstat)
 # ==========================================================
 
@@ -55,6 +57,17 @@ get_exe() { echo "$BIN_DIR/$1"; }
 
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+# ---------------- Privilege escalation ----------------
+run_privileged() {
+  if [[ $EUID -eq 0 ]]; then
+    "$@"
+  elif has_cmd sudo; then
+    sudo "$@"
+  else
+    fatal "This operation requires root privileges but sudo is not available."
+  fi
+}
+
 # ---------------- Package manager detection ----------------
 detect_pkg_manager() {
   if has_cmd apt-get; then echo "apt-get"
@@ -76,8 +89,7 @@ try_install() {
   fi
 
   log "Installing $pkg via $mgr..."
-  # Bypass corporate proxy for package managers: loopback and internal mirrors
-  # may be blocked if http_proxy/https_proxy are set in the environment.
+  # Bypass corporate proxy per l'installazione
   local proxy_env=""
   if [[ -n "${http_proxy:-}${https_proxy:-}${HTTP_PROXY:-}${HTTPS_PROXY:-}" ]]; then
     warn "Corporate proxy detected. Attempting install with proxy bypass..."
@@ -85,23 +97,17 @@ try_install() {
   fi
 
   case "$mgr" in
-    apt-get) $proxy_env apt-get install -y "$pkg" >/dev/null 2>&1 ;;
-    dnf|yum) $proxy_env "$mgr" install -y "$pkg" >/dev/null 2>&1 ;;
-    brew)    $proxy_env brew install "$pkg" >/dev/null 2>&1 ;;
+    apt-get) run_privileged $proxy_env apt-get install -y "$pkg" >/dev/null 2>&1 ;;
+    dnf|yum) run_privileged $proxy_env "$mgr" install -y "$pkg" >/dev/null 2>&1 ;;
+    brew)    $proxy_env brew install "$pkg" >/dev/null 2>&1 ;;   # brew non richiede sudo
   esac
 }
 
-# jq fallback: use python3 to extract JSON fields.
-# Mimics: jq -r '<expr>' where expr is either:
-#   .versions | keys[]       -> list all keys of .versions
-#   .root_token              -> extract scalar field
-#   .unseal_keys_b64[0]      -> extract first array element
+# ---------------- jq/unzip fallback via python3 ----------------
 JQ_USE_PYTHON=false
 UNZIP_USE_PYTHON=false
 
 jq_compat() {
-  # Usage: jq_compat '<jq_expr>' [input]
-  # Reads from stdin if no input provided.
   local expr="$1"
   local py_expr
 
@@ -124,10 +130,7 @@ jq_compat() {
   python3 -c "$py_expr"
 }
 
-# Wrapper: routes jq calls through jq_compat when jq is unavailable.
 jq_run() {
-  # Usage: jq_run -r '<expr>'  (reads stdin)
-  # Ignores -r flag (always raw output).
   local expr="${2:-$1}"
   if [[ "$JQ_USE_PYTHON" = true ]]; then
     jq_compat "$expr"
@@ -136,8 +139,6 @@ jq_run() {
   fi
 }
 
-# unzip fallback: use python3 zipfile to extract a zip archive.
-# Usage: unzip_compat <zipfile> <destdir>
 unzip_compat() {
   local zipfile="$1"
   local destdir="$2"
@@ -148,15 +149,11 @@ with zipfile.ZipFile('$zipfile') as z:
 "
 }
 
-# Wrapper: routes unzip calls through unzip_compat when unzip is unavailable.
 unzip_run() {
-  # Mimics: unzip -oq <zipfile> -d <destdir>
-  local zipfile destdir
-  # Parse: unzip_run -oq <zipfile> -d <destdir>
   shift  # skip -oq
-  zipfile="$1"; shift  # zip path
+  local zipfile="$1"; shift
   shift  # skip -d
-  destdir="$1"
+  local destdir="$1"
   if [[ "$UNZIP_USE_PYTHON" = true ]]; then
     unzip_compat "$zipfile" "$destdir"
   else
@@ -166,9 +163,6 @@ unzip_run() {
 
 # ---------------- Requirements ----------------
 check_requirements() {
-  # Tools that can be replaced by a python3 fallback if install fails/declined.
-  # Tools that can be replaced by a python3 fallback if install fails/declined.
-  # unzip: python3 zipfile module. jq: python3 json module.
   local python_replaceable="jq unzip"
 
   for cmd in curl jq unzip; do
@@ -178,7 +172,6 @@ check_requirements() {
 
     warn "Required tool not found: $cmd"
 
-    # Ask user whether to attempt auto-install.
     local answer="n"
     if [[ -t 0 ]]; then
       read -r -p "  Attempt to install $cmd automatically? [y/N] " answer || true
@@ -197,7 +190,6 @@ check_requirements() {
       fi
     fi
 
-    # Install declined or failed: try python3 fallback for replaceable tools.
     if echo "$python_replaceable" | grep -qw "$cmd"; then
       if has_cmd python3; then
         warn "Falling back to python3 for $cmd operations."
@@ -213,8 +205,8 @@ check_requirements() {
   done
 }
 
+# ---------------- Platform detection ----------------
 detect_platform() {
-  # Returns "os_arch" (e.g., linux_amd64, linux_arm64, darwin_amd64, darwin_arm64)
   local os arch
 
   case "$(uname -s)" in
@@ -226,16 +218,15 @@ detect_platform() {
   case "$(uname -m)" in
     x86_64)  arch="amd64" ;;
     aarch64) arch="arm64" ;;
-    arm64)   arch="arm64" ;; # macOS (Apple Silicon) reports arm64
+    arm64)   arch="arm64" ;;
     *) fatal "Unsupported architecture: $(uname -m)" ;;
   esac
 
   echo "${os}_${arch}"
 }
 
+# ---------------- Port check ----------------
 is_vault_running() {
-  # Cross-platform port check for localhost:$VAULT_PORT
-  # Prefer ss (Linux), fallback to lsof (macOS), then netstat
   if has_cmd ss; then
     ss -ltn "( sport = :$VAULT_PORT )" 2>/dev/null | grep -q ":$VAULT_PORT" && return 0 || return 1
   elif has_cmd lsof; then
@@ -248,9 +239,6 @@ is_vault_running() {
   fi
 }
 
-# ---------------- wait_for_port_free ----------------
-# Uses an explicit counter to avoid unreliable brace-expansion loops
-# under set -euo pipefail.
 wait_for_port_free() {
   local i=0
   while (( i < 10 )); do
@@ -265,17 +253,13 @@ wait_for_port_free() {
 
 # ---------------- Version handling ----------------
 get_latest_stable_vault_version() {
-  # Capture curl output explicitly so a non-JSON response (captive portal,
-  # HTTP error with 200 body) causes jq to fail and propagate via pipefail.
   local raw
   raw="$(curl -fsSL --max-time 10 --connect-timeout 5 \
     https://releases.hashicorp.com/vault/index.json 2>/dev/null)" || return 1
-  # Only pure OSS releases match strict semver (no +ent, +ent.hsm, +ent.fips* suffix).
-  # Enterprise builds require raft/consul storage and a valid license,
-  # neither of which is available in this ephemeral lab setup.
+  # Usa sort con separatore '.' e confronto numerico per ciascuna componente (portabile)
   echo "$raw" | jq_run -r '.versions | keys[]' 2>/dev/null \
     | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
-    | sort -V \
+    | sort -t. -k1,1n -k2,2n -k3,3n \
     | tail -1
 }
 
@@ -285,9 +269,6 @@ get_local_vault_version() {
   "$exe" --version | awk 'NR==1{print $2}' | sed 's/^v//'
 }
 
-# Warn if the local binary is a Vault Enterprise build.
-# Enterprise requires raft/consul storage and a license; it will not
-# work with this lab's ephemeral file-based configuration.
 check_local_binary_edition() {
   local exe="$1"
   [ -x "$exe" ] || return 0
@@ -384,6 +365,10 @@ print_access_info() {
   echo "=================================================="
   echo "Vault Lab ready"
   echo
+  echo "IMPORTANT: This Vault instance is freshly initialized and UNPOPULATED."
+  echo "To enable demo engines, policies, and data, run:"
+  echo "  ./vault-lab-ctl.sh bootstrap"
+  echo
   echo "1) Export environment variables in YOUR shell:"
   echo
   echo "   export VAULT_ADDR=$VAULT_ADDR"
@@ -430,8 +415,6 @@ create_runtime() {
 }
 
 # ---------------- wait_for_vault ----------------
-# Uses an explicit counter to avoid unreliable brace-expansion loops
-# under set -euo pipefail.
 wait_for_vault() {
   log "Waiting for Vault API..."
   local i=0
@@ -458,21 +441,16 @@ listener "tcp" {
   address = "127.0.0.1:${VAULT_PORT}"
   tls_disable = 1
 }
-# Required on WSL: mlockall on Windows-mounted filesystems causes Vault
-# to shut down immediately after start.
 disable_mlock = true
 ui = true
 EOF
 
-  # Bypass corporate proxy for loopback: without this, Vault internal
-  # cluster traffic and health checks may be routed through the proxy.
   NO_PROXY="127.0.0.1,localhost" no_proxy="127.0.0.1,localhost" \
   "$(get_exe vault)" server -config="$VAULT_DIR/vault.hcl" \
     >"$VAULT_DIR/vault.log" 2>&1 &
 
   wait_for_vault
 
-  # Declare 'out' as local to avoid polluting the global scope.
   local out
   out=$("$(get_exe vault)" operator init -key-shares=1 -key-threshold=1 -format=json)
   echo "$out" | jq_run -r '.root_token'    > "$VAULT_DIR/root.token"
@@ -504,7 +482,6 @@ cmd_bootstrap() {
   export VAULT_TOKEN
   VAULT_TOKEN="$(load_root_token)"
 
-  # Use the managed binary consistently, not whatever 'vault' is in PATH.
   local v
   v="$(get_exe vault)"
 
@@ -557,21 +534,40 @@ export VAULT_TOKEN=$token
 EOF
 }
 
-# ---------------- cmd_stop ----------------
-# Sends SIGTERM first to allow Vault to flush file storage cleanly,
-# then SIGKILL after 2s for any process that did not exit.
-cmd_stop() {
-  local pids
-  pids="$(pgrep -f '/tmp/vault-lab-.*/vault.hcl' || true)"
+cmd_logs() {
+  [ -f "$STATE_FILE" ] || fatal "Lab not running."
+  local runtime_dir
+  runtime_dir="$(cat "$STATE_FILE")"
+  local logfile="$runtime_dir/vault/vault.log"
+  [ -f "$logfile" ] || fatal "Log file not found: $logfile"
+  tail -f "$logfile"
+}
 
-  if [ -n "$pids" ]; then
-    echo "$pids" | xargs -r kill -15 || true
-    sleep 2
-    echo "$pids" | xargs -r kill -9 2>/dev/null || true
+cmd_stop() {
+  local runtime_dir=""
+  if [ -f "$STATE_FILE" ]; then
+    runtime_dir="$(cat "$STATE_FILE")"
   fi
 
-  rm -rf /tmp/vault-lab-* || true
-  rm -f "$STATE_FILE"     || true
+  # Termina i processi Vault noti
+  local pids
+  pids="$(pgrep -f '/tmp/vault-lab-.*/vault.hcl' || true)"
+  if [ -n "$pids" ]; then
+    echo "$pids" | xargs kill -15 2>/dev/null || true
+    sleep 2
+    echo "$pids" | xargs kill -9 2>/dev/null || true
+  fi
+
+  # Rimuovi la directory runtime corrente (se esiste)
+  if [ -n "$runtime_dir" ] && [ -d "$runtime_dir" ]; then
+    rm -rf "$runtime_dir"
+    log "Removed runtime directory: $runtime_dir"
+  else
+    # In caso non ci sia stato file, pulisci vecchie directory (meno preciso)
+    rm -rf /tmp/vault-lab-* 2>/dev/null || true
+  fi
+
+  rm -f "$STATE_FILE" 2>/dev/null || true
   log "Lab destroyed"
 }
 
@@ -582,6 +578,7 @@ case "${1:-}" in
   bootstrap) cmd_bootstrap ;;
   status)    cmd_status ;;
   env)       cmd_env ;;
+  logs)      cmd_logs ;;
   stop)      cmd_stop ;;
   -h|--help|"")
     sed -n '/^# ==========================================================/,/^# ==========================================================/p' "$0" \
